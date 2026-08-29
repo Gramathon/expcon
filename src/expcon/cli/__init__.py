@@ -22,6 +22,8 @@ from expcon.cli.commands import (
     artifacts_cmd,
     workspace_cmd,
     attach_cmd,
+    doctor_cmd,
+    skill_cmd,
 )
 
 
@@ -55,6 +57,8 @@ main.add_command(adjudicate_cmd)
 main.add_command(artifacts_cmd)
 main.add_command(workspace_cmd)
 main.add_command(attach_cmd)
+main.add_command(doctor_cmd)
+main.add_command(skill_cmd)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,1 @@
+{"type":"object","required":["contract_hash","identity","scientific_parameters_hash","locks"],"additionalProperties":true}

@@ -1,0 +1,29 @@
+schema_version: 1
+identity_algorithm: expcon-canonical-v1
+hash_algorithm: sha256
+experiment:
+  id: E01
+  version: v001
+  title: "Describe the experiment"
+hypothesis:
+  statement: "State a falsifiable hypothesis."
+source:
+  repository: .
+  dirty_tree_allowed: false
+data:
+  manifests: []
+execution:
+  allowed_backends: [local]
+  accelerator: {type: none}
+  stages:
+    - id: main
+      entrypoint: scripts/run_experiment.py
+evaluation:
+  primary_metric: accuracy
+  acceptance: {metric: accuracy, operator: ">=", threshold: 0.0}
+outputs:
+  required: [metrics.json]
+reproducibility:
+  level: seeded
+  seed: 42
+scientific_parameters: {}

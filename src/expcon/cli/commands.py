@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sys
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
@@ -54,9 +57,9 @@ def _print_human(data: Any, indent: int = 0) -> None:
 # ─── init ────────────────────────────────────────────────────────────────────
 
 @click.command()
-@click.option("--name", prompt="Experiment name", help="Experiment ID (e.g. E13)")
+@click.option("--name", help="Create an experiment contract with this ID (e.g. E13)")
 @click.option("--version", default="v001", help="Version (default: v001)")
-@click.option("--title", prompt="Title", help="Human-readable title")
+@click.option("--title", default=None, help="Human-readable title")
 @click.option("--description", default="", help="Description")
 @click.option("--output-dir", default="experiments", help="Output directory")
 @click.option("--backend", default="local", help="Default backend")
@@ -66,10 +69,31 @@ def _print_human(data: Any, indent: int = 0) -> None:
 @click.option("--python", default="3.12", help="Python version")
 @click.option("--reproducibility-level", default="seeded", help="Reproducibility level")
 @click.option("--seed", default=42, help="Random seed")
-@click.option("--as-json", is_flag=True, help="Output as JSON")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def init_cmd(name, version, title, description, output_dir, backend, hypothesis,
              primary_metric, required_output, python, reproducibility_level, seed, as_json):
-    """Initialize a new experiment contract."""
+    """Initialize an Expcon project, or create a contract with --name."""
+    if name is None:
+        root = Path.cwd()
+        control = root / ".expcon"
+        for child in ("runs", "artifacts", "state"):
+            (control / child).mkdir(parents=True, exist_ok=True)
+        config = control / "config.toml"
+        if not config.exists():
+            config.write_text("schema_version = 1\n", encoding="utf-8")
+        (root / "experiments").mkdir(exist_ok=True)
+        fragment = control / "AGENTS.fragment.md"
+        if not fragment.exists():
+            fragment.write_text(
+                files("expcon").joinpath("resources", "templates", "AGENTS.fragment.md").read_text(),
+                encoding="utf-8",
+            )
+        _output({"status": "INITIALIZED", "project": str(root), "control": str(control),
+                 "agents_fragment": str(fragment), "agents_md_preserved": (root / "AGENTS.md").exists()}, as_json)
+        return
+
+    if title is None:
+        raise click.UsageError("--title is required when creating an experiment; omit --name for project initialization")
     exp_dir = Path(output_dir) / f"{name.lower()}_{version}"
     exp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -133,6 +157,67 @@ def init_cmd(name, version, title, description, output_dir, backend, hypothesis,
         "contract_path": str(contract_path),
     }
     _output(result, as_json)
+
+
+# ─── distribution health and skill ──────────────────────────────────────────
+
+@click.command(name="doctor")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def doctor_cmd(as_json):
+    """Report core, optional, skill, and project capabilities."""
+    import expcon
+    root = find_workspace_root()
+    skill = files("expcon").joinpath("resources", "skills", "experiment-contract", "SKILL.md")
+    checks = {
+        "core": {"expcon": expcon.__version__, "python": sys.version.split()[0]},
+        "tools": {name: bool(shutil.which(name)) for name in ("git", "uv", "tmux", "kaggle")},
+        "skill": {"bundled": skill.is_file(), "path": str(skill)},
+        "project": {"pyproject_toml": (root / "pyproject.toml").exists(), "expcon": (root / ".expcon").exists()},
+    }
+    checks["status"] = "READY" if checks["skill"]["bundled"] else "NOT_READY"
+    _output(checks, as_json)
+
+
+@click.group(name="skill")
+def skill_cmd():
+    """Locate or install the bundled Experiment Contract skill."""
+
+
+@skill_cmd.command(name="path")
+def skill_path_cmd():
+    """Print the canonical installed skill path."""
+    click.echo(str(files("expcon").joinpath("resources", "skills", "experiment-contract", "SKILL.md")))
+
+
+@skill_cmd.command(name="status")
+@click.option("--json", "as_json", is_flag=True)
+def skill_status_cmd(as_json):
+    """Report bundled skill availability and a detected Codex installation."""
+    source = files("expcon").joinpath("resources", "skills", "experiment-contract", "SKILL.md")
+    codex_home = os.environ.get("CODEX_HOME")
+    target = Path(codex_home) / "skills" / "experiment-contract" / "SKILL.md" if codex_home else None
+    _output({"bundled": source.is_file(), "canonical_path": str(source),
+             "installed": bool(target and target.exists()), "installed_path": str(target) if target else None}, as_json)
+
+
+@skill_cmd.command(name="install")
+@click.option("--target", type=click.Path(path_type=Path), default=None,
+              help="Existing agent skills directory; defaults to $CODEX_HOME/skills when set.")
+@click.option("--json", "as_json", is_flag=True)
+def skill_install_cmd(target, as_json):
+    """Install the skill only into a detected or explicitly selected target."""
+    if target is None:
+        codex_home = os.environ.get("CODEX_HOME")
+        if not codex_home:
+            raise click.ClickException("No agent skills directory detected; use expcon skill install --target <skills-dir>")
+        target = Path(codex_home) / "skills"
+    if not target.exists() or not target.is_dir():
+        raise click.ClickException(f"Skill target must be an existing directory: {target}")
+    destination = target / "experiment-contract"
+    destination.mkdir(exist_ok=True)
+    source = files("expcon").joinpath("resources", "skills", "experiment-contract", "SKILL.md")
+    (destination / "SKILL.md").write_text(source.read_text(), encoding="utf-8")
+    _output({"status": "INSTALLED", "path": str(destination / "SKILL.md")}, as_json)
 
 
 # ─── inspect ─────────────────────────────────────────────────────────────────
@@ -257,6 +342,10 @@ def diff_cmd(experiment, as_json):
 def bundle_cmd(experiment, as_json):
     """Create a content-addressed bundle for an experiment."""
     exp_path = _resolve_experiment(experiment)
+    divergence = diff_experiment(exp_path)
+    if divergence.get("divergence_detected"):
+        _output({"status": "ERROR", "error": "Frozen experiment diverged; create a successor version", "diff": divergence}, as_json)
+        sys.exit(1)
     builder = BundleBuilder(exp_path)
     try:
         bundle_path, bundle_id = builder.build()
@@ -312,6 +401,15 @@ def run_cmd(experiment, backend, kernel, accelerator, as_json):
 
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
 
+    try:
+        validate_experiment(exp_path)
+        divergence = diff_experiment(exp_path)
+        if divergence.get("divergence_detected"):
+            raise RuntimeError("Frozen experiment diverged; execution is refused")
+    except Exception as exc:
+        _output({"status": "ERROR", "error": str(exc)}, as_json)
+        sys.exit(1)
+
     # Verify allowed backend
     contract = load_contract(exp_path / "EXPERIMENT.yaml")
     allowed_backends = contract.get("execution", "allowed_backends", default=[])
@@ -323,6 +421,10 @@ def run_cmd(experiment, backend, kernel, accelerator, as_json):
     bundle_dir = exp_path / "bundle"
     if not bundle_dir.exists():
         _output({"status": "ERROR", "error": "Bundle not found. Run 'expcon bundle' first."}, as_json)
+        sys.exit(1)
+    bundle_check = BundleVerifier(bundle_dir).verify()
+    if bundle_check["status"] != "PASS":
+        _output({"status": "ERROR", "error": "Bundle verification failed", "details": bundle_check["errors"]}, as_json)
         sys.exit(1)
 
     run = lifecycle.create_run(

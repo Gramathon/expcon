@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from importlib.resources import files
 import re
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,8 @@ from typing import Any
 import jsonschema
 import yaml
 
+# Schemas ship inside the distribution.  The legacy repository-level schemas
+# remain useful for contributors, but installed wheels must not depend on them.
 SCHEMA_DIR = Path(__file__).resolve().parents[3] / "schemas"
 
 
@@ -18,8 +21,17 @@ class ContractError(Exception):
 
 
 def _load_schema(name: str) -> dict:
-    path = SCHEMA_DIR / name
-    return json.loads(path.read_text())
+    resource_name = {
+        "experiment.schema.json": "experiment-v1.json",
+        "frozen_contract.schema.json": "frozen-contract-v1.json",
+        "run.schema.json": "run-v1.json",
+        "artifact.schema.json": "artifact-v1.json",
+        "evidence.schema.json": "evidence-v1.json",
+    }.get(name, name)
+    try:
+        return json.loads(files("expcon").joinpath("resources", "schemas", resource_name).read_text())
+    except (FileNotFoundError, ModuleNotFoundError):  # source-tree compatibility
+        return json.loads((SCHEMA_DIR / name).read_text())
 
 
 def load_contract(path: Path | str) -> "ExperimentContract":

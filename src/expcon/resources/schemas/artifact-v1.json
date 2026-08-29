@@ -1,0 +1,1 @@
+{"type":"object","required":["artifact_id","artifact_type","sha256","run_id"],"additionalProperties":true}

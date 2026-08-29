@@ -1,3 +1,5 @@
+LICENSE
+README.md
 pyproject.toml
 src/expcon/__init__.py
 src/expcon.egg-info/PKG-INFO
@@ -27,6 +29,15 @@ src/expcon/hashing/manifest.py
 src/expcon/lifecycle/__init__.py
 src/expcon/lifecycle/experiment_state.py
 src/expcon/lifecycle/state.py
+src/expcon/resources/schemas/artifact-v1.json
+src/expcon/resources/schemas/evidence-v1.json
+src/expcon/resources/schemas/experiment-v1.json
+src/expcon/resources/schemas/frozen-contract-v1.json
+src/expcon/resources/schemas/run-v1.json
+src/expcon/resources/skills/experiment-contract/SKILL.md
+src/expcon/resources/templates/AGENTS.fragment.md
+src/expcon/resources/templates/CHALLENGE.yaml
+src/expcon/resources/templates/EXPERIMENT.yaml
 src/expcon/runner/__init__.py
 src/expcon/runner/backends.py
 src/expcon/runner/runner.py

@@ -50,26 +50,38 @@ def validate_experiment(experiment_dir: Path | str) -> dict[str, Any]:
     contract = load_contract(contract_path)
     validate_contract(contract)
 
-    # Check for unresolved aliases
+    # Check for unresolved mutable aliases anywhere in scientific material.
     issues = []
     sci_params = extract_scientific_parameters(contract.data)
-    sci_text = canonical_json(sci_params)
-    if "latest" in sci_text or "main" in sci_text or "HEAD" in sci_text:
+    aliases = {"latest", "main", "head"}
+    if _contains_mutable_alias(sci_params, aliases):
         issues.append("Unresolved alias 'latest'/'main'/'HEAD' found in scientific parameters")
 
     # Check stage DAG
     stages = contract.get("execution", "stages", default=[])
-    stage_ids = {s["id"] for s in stages if isinstance(s, dict)}
+    stage_ids = {s.get("id") for s in stages if isinstance(s, dict) and s.get("id")}
+    if len(stage_ids) != len(stages):
+        issues.append("Stage ids must be present and unique")
     for stage in stages:
         if isinstance(stage, dict):
             for req in stage.get("requires", []):
                 if req not in stage_ids:
                     issues.append(f"Stage '{stage['id']}' requires unknown stage '{req}'")
+    if _has_stage_cycle(stages):
+        issues.append("Stage graph contains a cycle")
 
     # Check required outputs
     required = contract.get("outputs", "required", default=[])
     if not required:
         issues.append("No required outputs declared")
+
+    acceptance = contract.get("evaluation", "acceptance", default=None)
+    if acceptance is not None and not isinstance(acceptance, dict):
+        issues.append("evaluation.acceptance must be an object")
+    if isinstance(acceptance, dict) and acceptance and not any(
+        key in acceptance for key in ("operator", "rule", "threshold", "metric")
+    ):
+        issues.append("evaluation.acceptance must declare a deterministic rule")
 
     if issues:
         raise ContractOperationError("Validation issues: " + "; ".join(issues))
@@ -84,6 +96,37 @@ def validate_experiment(experiment_dir: Path | str) -> dict[str, Any]:
         "stages": [s["id"] for s in stages if isinstance(s, dict)],
         "required_outputs": required,
     }
+
+
+def _contains_mutable_alias(value: Any, aliases: set[str]) -> bool:
+    if isinstance(value, dict):
+        return any(_contains_mutable_alias(item, aliases) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_mutable_alias(item, aliases) for item in value)
+    return isinstance(value, str) and value.strip().lower() in aliases
+
+
+def _has_stage_cycle(stages: list[Any]) -> bool:
+    graph = {
+        str(stage["id"]): [str(dep) for dep in stage.get("requires", [])]
+        for stage in stages
+        if isinstance(stage, dict) and stage.get("id")
+    }
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node: str) -> bool:
+        if node in visiting:
+            return True
+        if node in visited:
+            return False
+        visiting.add(node)
+        cyclic = any(visit(dep) for dep in graph.get(node, []) if dep in graph)
+        visiting.remove(node)
+        visited.add(node)
+        return cyclic
+
+    return any(visit(node) for node in graph)
 
 
 def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | None = None) -> dict[str, Any]:

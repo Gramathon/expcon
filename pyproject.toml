@@ -19,5 +19,12 @@ expcon = "expcon.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+expcon = [
+    "resources/skills/experiment-contract/SKILL.md",
+    "resources/schemas/*.json",
+    "resources/templates/*",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

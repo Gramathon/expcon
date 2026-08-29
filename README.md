@@ -95,7 +95,10 @@ Instead: `current experiment → INVALID/FAILED/BLOCKED → diagnosis → propos
 
 ```bash
 # Global installation via uv tool
-uv tool install --editable /path/to/expcon
+uv tool install expcon
+
+# Development installation
+uv tool install --editable --force /path/to/expcon
 
 # Verify
 expcon --version
@@ -107,7 +110,10 @@ Expcon installs as a global tool. It does **not** install inside every ML projec
 ## Quick Start
 
 ```bash
-# Initialize a new experiment
+# Initialize Expcon control state in an existing ML repository
+expcon init
+
+# Create a new experiment contract
 expcon init --name E13 --version v002 --title "My Experiment"
 
 # Validate the contract
@@ -144,6 +150,8 @@ expcon workspace experiments/e13_v002/
 | Command | Description |
 |---|---|
 | `expcon init` | Initialize a new experiment contract |
+| `expcon doctor` | Inspect installed and project capabilities |
+| `expcon skill path/install/status` | Manage the bundled agent skill safely |
 | `expcon inspect <exp>` | Inspect an experiment contract |
 | `expcon validate <exp>` | Validate contract structure |
 | `expcon freeze <exp>` | Freeze contract (compute identity, write lock) |
@@ -162,6 +170,20 @@ expcon workspace experiments/e13_v002/
 | `expcon attach <exp>` | Attach to existing tmux workspace |
 
 All commands support `--json` for machine-readable output.
+
+## Build and verify a release
+
+```bash
+uv build
+sha256sum dist/* > SHA256SUMS
+
+# Isolated wheel test without changing the user's global tool directory
+release_dir=$(mktemp -d)
+UV_TOOL_DIR="$release_dir/tools" UV_TOOL_BIN_DIR="$release_dir/bin" \
+  uv tool install --force dist/expcon-0.1.0-py3-none-any.whl
+"$release_dir/bin/expcon" --version
+"$release_dir/bin/expcon" doctor
+```
 
 ## Experiment Lifecycle
 

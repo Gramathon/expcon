@@ -1,0 +1,1 @@
+{"type":"object","required":["evidence_id","run_id","contract_hash","bundle_id"],"additionalProperties":true}
