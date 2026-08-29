@@ -1,0 +1,62 @@
+schema_version: 1
+experiment:
+  id: E13_CANONICAL_KNEE_ACQUISITION_INVARIANCE_v002
+  version: v002
+  title: Canonical Knee Acquisition Invariance v002
+  description: Tests whether a landmark-derived 2D coronal knee coordinate map is
+    invariant to synthetic acquisition framing changes for the same knee.
+  parent_experiment: E13_CANONICAL_KNEE_ACQUISITION_INVARIANCE_v001
+hypothesis:
+  statement: A landmark-derived 2D coronal knee coordinate map is invariant to synthetic
+    acquisition framing changes for the same knee, measured by probe RMSE below equivalence
+    thresholds.
+source:
+  repository: .
+  dirty_tree_allowed: false
+data:
+  provider: kaggle
+  manifests:
+  - manifests/dataset.json
+  datasets:
+  - name: fastmri-knee-val
+    provider: kaggle
+    id: arafatshovon/fastmri-knee-val
+  - name: landmarks
+    provider: kaggle
+    id: gramath/landmarks
+  - name: rsna-competition-dataset
+    provider: kaggle
+    id: gramath/rsna-competition-dataset
+execution:
+  allowed_backends:
+  - local
+  - kaggle
+  accelerator:
+    type: none
+  stages:
+  - id: prepare
+    entrypoint: scripts/kaggle_run_e13_acquisition_invariance.py
+    requires: []
+evaluation:
+  primary_metric: volume_level_median_probe_rmse
+  acceptance:
+    median_volume_rmse_max: 0.05
+    p95_volume_rmse_max: 0.15
+  threshold: 0.05
+outputs:
+  required:
+  - metrics/E13_A_AGGREGATE_RESULT.json
+  - metrics/E13_A_PROBE_ERROR_BY_VOLUME.csv
+  - metrics/E13_A_PERTURBATION_SUMMARY.csv
+reproducibility:
+  level: seeded
+  seed: 20260816
+scientific_parameters:
+  seed: 20260816
+  metric: volume_level_median_probe_rmse
+  dataset_identity: fastmri-knee-val
+  split: canonical_geometry_stage_b
+  model_revision: canonical_transform_v001
+  equivalence_thresholds:
+    median_volume_rmse_max: 0.05
+    p95_volume_rmse_max: 0.15

@@ -1,0 +1,4 @@
+click>=8.1
+jsonschema>=4.0
+pyyaml>=6.0
+tabulate>=0.9

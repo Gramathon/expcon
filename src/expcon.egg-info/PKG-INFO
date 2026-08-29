@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: expcon
+Version: 0.1.0
+Summary: Experiment Control System for AI-assisted ML research
+Author: Expcon
+License-Expression: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: click>=8.1
+Requires-Dist: jsonschema>=4.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: tabulate>=0.9

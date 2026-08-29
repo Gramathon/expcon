@@ -1,0 +1,15 @@
+{
+  "run_id": "run-E00-b9dd0982",
+  "stages": [
+    {
+      "artifacts": [],
+      "duration_seconds": 0.0,
+      "error": "",
+      "metrics": {},
+      "output": "{\n  \"status\": \"completed\",\n  \"metrics\": {\n    \"accuracy\": 0.85,\n    \"threshold\": 0.5,\n    \"primary_metric_value\": 0.85,\n    \"verdict\": \"SUPPORTED\"\n  }\n}\n",
+      "stage_id": "main",
+      "success": true
+    }
+  ],
+  "success": true
+}

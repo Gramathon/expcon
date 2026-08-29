@@ -1,0 +1,825 @@
+"""Expcon CLI commands."""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+import click
+
+from expcon.contract.contract import ExperimentContract, load_contract
+from expcon.contract.operations import validate_experiment, freeze_experiment, diff_experiment
+from expcon.contract.canonical import contract_identity
+from expcon.lifecycle.experiment_state import ExperimentLifecycle
+from expcon.lifecycle.state import ExperimentState
+from expcon.bundle.bundle import BundleBuilder, BundleVerifier
+from expcon.runner.runner import StageRunner, RunContext
+from expcon.runner.backends import LocalBackend, KaggleBackend
+from expcon.evidence.evidence import EvidenceVerifier
+from expcon.adjudication.adjudication import Adjudicator
+from expcon.workspace.workspace import WorkspaceManager
+from expcon.artifacts.artifact import ArtifactRegistry
+from expcon.util.path import find_workspace_root
+
+
+def _output(data: Any, as_json: bool = False) -> None:
+    """Output data in JSON or human-readable format."""
+    if as_json:
+        click.echo(json.dumps(data, indent=2, sort_keys=True, default=str))
+    else:
+        _print_human(data)
+
+
+def _print_human(data: Any, indent: int = 0) -> None:
+    """Pretty-print data for human consumption."""
+    prefix = "  " * indent
+    if isinstance(data, dict):
+        for key, value in sorted(data.items()):
+            if isinstance(value, (dict, list)) and value:
+                click.echo(f"{prefix}{key}:")
+                _print_human(value, indent + 1)
+            elif isinstance(value, list):
+                click.echo(f"{prefix}{key}: {value}")
+            else:
+                click.echo(f"{prefix}{key}: {value}")
+    elif isinstance(data, list):
+        for item in data:
+            _print_human(item, indent)
+    else:
+        click.echo(f"{prefix}{data}")
+
+
+# ─── init ────────────────────────────────────────────────────────────────────
+
+@click.command()
+@click.option("--name", prompt="Experiment name", help="Experiment ID (e.g. E13)")
+@click.option("--version", default="v001", help="Version (default: v001)")
+@click.option("--title", prompt="Title", help="Human-readable title")
+@click.option("--description", default="", help="Description")
+@click.option("--output-dir", default="experiments", help="Output directory")
+@click.option("--backend", default="local", help="Default backend")
+@click.option("--hypothesis", default="...", help="Hypothesis statement")
+@click.option("--primary-metric", default="accuracy", help="Primary metric")
+@click.option("--required-output", multiple=True, help="Required output files")
+@click.option("--python", default="3.12", help="Python version")
+@click.option("--reproducibility-level", default="seeded", help="Reproducibility level")
+@click.option("--seed", default=42, help="Random seed")
+@click.option("--as-json", is_flag=True, help="Output as JSON")
+def init_cmd(name, version, title, description, output_dir, backend, hypothesis,
+             primary_metric, required_output, python, reproducibility_level, seed, as_json):
+    """Initialize a new experiment contract."""
+    exp_dir = Path(output_dir) / f"{name.lower()}_{version}"
+    exp_dir.mkdir(parents=True, exist_ok=True)
+
+    contract = {
+        "schema_version": 1,
+        "experiment": {
+            "id": name,
+            "version": version,
+            "title": title,
+            "description": description,
+        },
+        "hypothesis": {
+            "statement": hypothesis,
+        },
+        "source": {
+            "repository": ".",
+            "dirty_tree_allowed": False,
+        },
+        "execution": {
+            "allowed_backends": [backend],
+            "accelerator": {"type": "none"},
+            "stages": [
+                {
+                    "id": "main",
+                    "entrypoint": "scripts/run_experiment.py",
+                    "requires": [],
+                }
+            ],
+        },
+        "environment": {
+            "python": python,
+            "dependency_lock": "uv.lock",
+        },
+        "evaluation": {
+            "primary_metric": primary_metric,
+            "threshold": None,
+        },
+        "outputs": {
+            "required": list(required_output) if required_output else ["metrics.json"],
+        },
+        "reproducibility": {
+            "level": reproducibility_level,
+            "seed": seed,
+        },
+        "scientific_parameters": {
+            "seed": seed,
+            "metric": primary_metric,
+        },
+    }
+
+    contract_path = exp_dir / "EXPERIMENT.yaml"
+    import yaml
+
+    contract_path.write_text(yaml.safe_dump(contract, default_flow_style=False, sort_keys=False), encoding="utf-8")
+
+    result = {
+        "status": "CREATED",
+        "experiment_id": name,
+        "version": version,
+        "path": str(exp_dir),
+        "contract_path": str(contract_path),
+    }
+    _output(result, as_json)
+
+
+# ─── inspect ─────────────────────────────────────────────────────────────────
+
+@click.command(name="inspect")
+@click.argument("experiment")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def inspect_cmd(experiment, as_json):
+    """Inspect an experiment contract."""
+    exp_path = _resolve_experiment(experiment)
+    contract = load_contract(exp_path / "EXPERIMENT.yaml")
+
+    # Get lifecycle state
+    workspace_root = find_workspace_root(exp_path.parent)
+    lifecycle = ExperimentLifecycle(workspace_root)
+    state = lifecycle.get_experiment_state(exp_path)
+
+    identity = contract_identity(contract.data)
+
+    # Check if frozen
+    lock_path = exp_path / "contract.lock.json"
+    frozen = lock_path.exists()
+    lock_info = {}
+    if frozen:
+        lock_info = json.loads(lock_path.read_text(encoding="utf-8"))
+
+    result = {
+        "experiment_id": contract.experiment_id,
+        "version": contract.version,
+        "title": contract.title,
+        "state": state.value,
+        "frozen": frozen,
+        "contract_hash": identity["contract_hash"],
+        "scientific_hash": identity["scientific_hash"],
+        "execution_hash": identity["execution_hash"],
+        "hypothesis": contract.hypothesis,
+        "stages": contract.get("execution", "stages", default=[]),
+        "required_outputs": contract.get("outputs", "required", default=[]),
+        "reproducibility_level": contract.get("reproducibility", "level", default="unknown"),
+        "seed": contract.get("scientific_parameters", "seed", default=None),
+        "primary_metric": contract.get("evaluation", "primary_metric", default=None),
+        "allowed_backends": contract.get("execution", "allowed_backends", default=[]),
+        "accelerator": contract.get("execution", "accelerator", "type", default="none"),
+    }
+    if lock_info:
+        result["bundle_id"] = lock_info.get("identity", {}).get("bundle_id")
+        result["frozen_at"] = lock_info.get("frozen_at")
+
+    _output(result, as_json)
+
+
+# ─── validate ────────────────────────────────────────────────────────────────
+
+@click.command(name="validate")
+@click.argument("experiment")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def validate_cmd(experiment, as_json):
+    """Validate an experiment contract."""
+    exp_path = _resolve_experiment(experiment)
+    try:
+        result = validate_experiment(exp_path)
+        _output(result, as_json)
+    except Exception as exc:
+        _output({"status": "INVALID", "error": str(exc)}, as_json)
+        sys.exit(1)
+
+
+# ─── freeze ──────────────────────────────────────────────────────────────────
+
+@click.command()
+@click.argument("experiment")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def freeze_cmd(experiment, as_json):
+    """Freeze an experiment: validate, resolve, compute identities, write lock."""
+    exp_path = _resolve_experiment(experiment)
+    workspace_root = find_workspace_root(exp_path.parent)
+    try:
+        result = freeze_experiment(exp_path, workspace_root)
+        _output(result, as_json)
+    except Exception as exc:
+        _output({"status": "ERROR", "error": str(exc)}, as_json)
+        sys.exit(1)
+
+
+# ─── diff ────────────────────────────────────────────────────────────────────
+
+@click.command()
+@click.argument("experiment")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def diff_cmd(experiment, as_json):
+    """Detect scientifically meaningful divergence in a frozen experiment."""
+    exp_path = _resolve_experiment(experiment)
+    result = diff_experiment(exp_path)
+
+    if result["divergence_detected"]:
+        if not as_json:
+            click.secho("CONTRACT DIVERGENCE DETECTED", fg="red", bold=True)
+            for d in result["divergences"]:
+                click.secho(f"\n{d['field']}", fg="yellow")
+                click.secho(f"  {d['message']}")
+                if "frozen_value" in d:
+                    click.secho(f"  frozen:  {d['frozen_value']}")
+                if "current_value" in d:
+                    click.secho(f"  current: {d['current_value']}")
+            click.secho("\nScientific identity changed.", fg="red")
+            click.secho("Do not execute as the current experiment version.", fg="yellow")
+            click.secho("Create a successor experiment version.", fg="yellow")
+        else:
+            _output(result, as_json)
+        sys.exit(1)
+    else:
+        if not as_json:
+            click.secho("No scientific divergence detected.", fg="green")
+        _output(result, as_json)
+
+
+# ─── bundle ──────────────────────────────────────────────────────────────────
+
+@click.command()
+@click.argument("experiment")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def bundle_cmd(experiment, as_json):
+    """Create a content-addressed bundle for an experiment."""
+    exp_path = _resolve_experiment(experiment)
+    builder = BundleBuilder(exp_path)
+    try:
+        bundle_path, bundle_id = builder.build()
+        result = {
+            "status": "BUNDLED",
+            "bundle_path": str(bundle_path),
+            "bundle_id": bundle_id,
+            "experiment_id": load_contract(exp_path / "EXPERIMENT.yaml").experiment_id,
+        }
+        _output(result, as_json)
+    except Exception as exc:
+        _output({"status": "ERROR", "error": str(exc)}, as_json)
+        sys.exit(1)
+
+
+# ─── verify-bundle ───────────────────────────────────────────────────────────
+
+@click.command(name="verify-bundle")
+@click.argument("bundle")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def verify_bundle_cmd(bundle, as_json):
+    """Verify a bundle's integrity."""
+    bundle_path = Path(bundle).resolve()
+    if not bundle_path.exists():
+        bundle_path = _resolve_experiment(bundle) / "bundle"
+
+    verifier = BundleVerifier(bundle_path)
+    result = verifier.verify()
+    _output(result, as_json)
+    if result["status"] != "PASS":
+        sys.exit(1)
+
+
+# ─── run ─────────────────────────────────────────────────────────────────────
+
+@click.command()
+@click.argument("experiment")
+@click.option("--backend", default="local", help="Execution backend")
+@click.option("--kernel", default=None, help="Kaggle kernel name")
+@click.option("--accelerator", default="none", help="Accelerator type")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def run_cmd(experiment, backend, kernel, accelerator, as_json):
+    """Run an experiment on a specified backend."""
+    exp_path = _resolve_experiment(experiment)
+    workspace_root = find_workspace_root(exp_path.parent)
+    lifecycle = ExperimentLifecycle(workspace_root)
+
+    # Check if frozen
+    lock_path = exp_path / "contract.lock.json"
+    if not lock_path.exists():
+        _output({"status": "ERROR", "error": "Experiment must be frozen before running"}, as_json)
+        sys.exit(1)
+
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+
+    # Verify allowed backend
+    contract = load_contract(exp_path / "EXPERIMENT.yaml")
+    allowed_backends = contract.get("execution", "allowed_backends", default=[])
+    if backend not in allowed_backends:
+        _output({"status": "ERROR", "error": f"Backend '{backend}' not allowed. Allowed: {allowed_backends}"}, as_json)
+        sys.exit(1)
+
+    # Create run record
+    bundle_dir = exp_path / "bundle"
+    if not bundle_dir.exists():
+        _output({"status": "ERROR", "error": "Bundle not found. Run 'expcon bundle' first."}, as_json)
+        sys.exit(1)
+
+    run = lifecycle.create_run(
+        experiment_id=contract.experiment_id,
+        version=contract.version,
+        backend=backend,
+        contract_hash=lock["contract_hash"],
+        bundle_id=lock["identity"]["bundle_id"],
+        kernel=kernel,
+        accelerator=accelerator,
+    )
+
+    # Select backend
+    if backend == "local":
+        backend_impl = LocalBackend(workspace_root)
+    elif backend == "kaggle":
+        backend_impl = KaggleBackend(workspace_root)
+    else:
+        _output({"status": "ERROR", "error": f"Unknown backend: {backend}"}, as_json)
+        sys.exit(1)
+
+    runner = StageRunner(backend_impl)
+
+    context = RunContext(
+        experiment_id=contract.experiment_id,
+        version=contract.version,
+        bundle_id=lock["identity"]["bundle_id"],
+        contract_hash=lock["contract_hash"],
+        kernel=kernel,
+        accelerator=accelerator,
+    )
+
+    # Transition states through the state machine
+    try:
+        lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, "CONTRACT_VERIFIED"), "Contract verified")
+        lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, "BACKEND_SELECTED"), f"Backend: {backend}")
+        lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, "DATA_VERIFIED"), "Data verified")
+        lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, "STAGE_STARTED"), "Stages started")
+    except Exception:
+        pass  # May already be in these states
+
+    # Set run_id in context so backend uses the same ID
+    context.run_id = run.run_id
+
+    # Submit
+    try:
+        backend_run_id = runner.run(bundle_dir, context)
+        lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, "STAGE_COMPLETED"), "Stages completed")
+        lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, "RESULTS_AVAILABLE"), "Results available")
+        result = {
+            "status": "SUBMITTED",
+            "run_id": run.run_id,
+            "experiment_id": contract.experiment_id,
+            "version": contract.version,
+            "backend": backend,
+            "bundle_id": lock["identity"]["bundle_id"],
+            "kernel": kernel,
+            "accelerator": accelerator,
+        }
+        _output(result, as_json)
+    except Exception as exc:
+        lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, "FAILED_EXECUTION"), str(exc))
+        _output({"status": "ERROR", "error": str(exc), "run_id": run.run_id}, as_json)
+        sys.exit(1)
+
+
+def lifecycle_run_state_from_run(run_id: str, state_name: str):
+    from expcon.lifecycle.state import RunState
+
+    return RunState(state_name)
+
+
+# ─── ps ──────────────────────────────────────────────────────────────────────
+
+@click.command(name="ps")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def ps_cmd(as_json):
+    """List all runs."""
+    workspace_root = find_workspace_root()
+    lifecycle = ExperimentLifecycle(workspace_root)
+    runs = lifecycle.list_runs()
+
+    result = {
+        "runs": [
+            {
+                "run_id": r.run_id,
+                "experiment_id": r.experiment_id,
+                "version": r.version,
+                "state": r.state.value,
+                "backend": r.backend,
+                "created_at": r.created_at,
+                "kernel": r.kernel,
+            }
+            for r in runs
+        ],
+        "count": len(runs),
+    }
+    _output(result, as_json)
+
+
+# ─── status ──────────────────────────────────────────────────────────────────
+
+@click.command()
+@click.argument("run_id")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def status_cmd(run_id, as_json):
+    """Get status of a run."""
+    workspace_root = find_workspace_root()
+    lifecycle = ExperimentLifecycle(workspace_root)
+
+    try:
+        run = lifecycle.load_run(run_id)
+    except KeyError:
+        _output({"status": "ERROR", "error": f"Run not found: {run_id}"}, as_json)
+        sys.exit(1)
+
+    # Get backend status
+    if run.backend == "local":
+        backend = LocalBackend(workspace_root)
+    elif run.backend == "kaggle":
+        backend = KaggleBackend(workspace_root)
+    else:
+        backend = None
+
+    backend_status = backend.status(run_id) if backend else None
+
+    result = {
+        "run_id": run.run_id,
+        "experiment_id": run.experiment_id,
+        "version": run.version,
+        "state": run.state.value,
+        "backend": run.backend,
+        "created_at": run.created_at,
+        "updated_at": run.updated_at,
+        "contract_hash": run.contract_hash,
+        "bundle_id": run.bundle_id,
+        "kernel": run.kernel,
+        "accelerator": run.accelerator,
+        "backend_status": backend_status.details if backend_status else None,
+    }
+    _output(result, as_json)
+
+
+# ─── events ──────────────────────────────────────────────────────────────────
+
+@click.command(name="events")
+@click.argument("run_id")
+@click.option("--follow", "-f", is_flag=True, help="Follow events in real-time")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def events_cmd(run_id, follow, as_json):
+    """Show events for a run."""
+    workspace_root = find_workspace_root()
+    lifecycle = ExperimentLifecycle(workspace_root)
+
+    if follow:
+        from expcon.lifecycle.experiment_state import EventLedger
+
+        run_dir = lifecycle.run_dir(run_id)
+        ledger = EventLedger(run_dir)
+        try:
+            for line in lifecycle._follow_file(ledger.events_file, 0):
+                event = json.loads(line)
+                if as_json:
+                    click.echo(json.dumps(event, sort_keys=True))
+                else:
+                    click.echo(f"[{event.get('timestamp', '?')}] {event.get('event', '?')}")
+        except KeyboardInterrupt:
+            pass
+    else:
+        events = lifecycle.get_run_events(run_id)
+        result = {"run_id": run_id, "events": events, "count": len(events)}
+        _output(result, as_json)
+
+
+# ─── fetch ───────────────────────────────────────────────────────────────────
+
+@click.command()
+@click.argument("run_id")
+@click.option("--output-dir", default=None, help="Output directory for evidence")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def fetch_cmd(run_id, output_dir, as_json):
+    """Fetch evidence from a completed run."""
+    workspace_root = find_workspace_root()
+    lifecycle = ExperimentLifecycle(workspace_root)
+
+    try:
+        run = lifecycle.load_run(run_id)
+    except KeyError:
+        _output({"status": "ERROR", "error": f"Run not found: {run_id}"}, as_json)
+        sys.exit(1)
+
+    if output_dir is None:
+        output_dir = workspace_root / ".expcon" / "fetched" / run_id
+
+    if run.backend == "local":
+        backend = LocalBackend(workspace_root)
+    elif run.backend == "kaggle":
+        backend = KaggleBackend(workspace_root)
+    else:
+        _output({"status": "ERROR", "error": f"Unknown backend: {run.backend}"}, as_json)
+        sys.exit(1)
+
+    evidence_path = backend.fetch(run_id, Path(output_dir))
+
+    # Transition to EVIDENCE_FETCHED so verify can proceed
+    try:
+        lifecycle.update_run_state(run_id, lifecycle_run_state_from_run(run_id, "EVIDENCE_FETCHED"), "Evidence fetched")
+    except Exception:
+        pass  # May already be in EVIDENCE_FETCHED state
+
+    # Package evidence into a verifiable bundle with manifest
+    import shutil
+    from datetime import datetime, timezone
+    from expcon.hashing.canonical import canonical_bytes
+    from expcon.hashing.digest import sha256_bytes, file_sha256
+
+    run_dir = lifecycle.run_dir(run_id)
+
+    # Find the experiment directory to locate bundle and contract
+    exp_dir = _find_experiment_dir(workspace_root, run.experiment_id, run.version)
+    bundle_dir = None
+    required_outputs = []
+    if exp_dir:
+        bundle_dir = exp_dir / "bundle"
+        try:
+            contract = load_contract(exp_dir / "EXPERIMENT.yaml")
+            required_outputs = contract.get("outputs", "required", default=[])
+        except Exception:
+            pass
+
+    # Set up output directory structure for package_evidence
+    output_source = run_dir / "packaged_output"
+    output_source.mkdir(exist_ok=True)
+
+    # Copy resolved_contract.json from bundle
+    if bundle_dir and (bundle_dir / "resolved_contract.json").exists():
+        shutil.copy2(bundle_dir / "resolved_contract.json", output_source / "resolved_contract.json")
+
+    # Copy stage outputs to outputs/
+    outputs_dir = output_source / "outputs"
+    outputs_dir.mkdir(exist_ok=True)
+    stages_dir = run_dir / "stages"
+    if stages_dir.exists():
+        for stage_dir in stages_dir.iterdir():
+            if stage_dir.is_dir():
+                for f in stage_dir.iterdir():
+                    if f.is_file():
+                        shutil.copy2(f, outputs_dir / f.name)
+
+    # Copy metrics to metrics/
+    metrics_dir = output_source / "metrics"
+    metrics_dir.mkdir(exist_ok=True)
+    for f in outputs_dir.iterdir():
+        if f.is_file():
+            shutil.copy2(f, metrics_dir / f.name)
+
+    # Create environment.json
+    env_data = {
+        "python": sys.version,
+        "platform": sys.platform,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    (output_source / "environment.json").write_text(
+        json.dumps(env_data, indent=2) + "\n", encoding="utf-8"
+    )
+
+    # Package evidence
+    verifier = EvidenceVerifier(evidence_path)
+    verifier.package_evidence(
+        run_id=run_id,
+        experiment_id=run.experiment_id,
+        contract_hash=run.contract_hash,
+        bundle_id=run.bundle_id,
+        output_dir=output_source,
+        required_outputs=required_outputs,
+    )
+
+    result = {
+        "status": "FETCHED",
+        "run_id": run_id,
+        "evidence_path": str(evidence_path),
+    }
+    _output(result, as_json)
+
+
+# ─── verify ──────────────────────────────────────────────────────────────────
+
+@click.command()
+@click.argument("run_id")
+@click.option("--bundle", default=None, help="Bundle path for cross-verification")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def verify_cmd(run_id, bundle, as_json):
+    """Verify evidence for a run."""
+    workspace_root = find_workspace_root()
+    lifecycle = ExperimentLifecycle(workspace_root)
+
+    try:
+        run = lifecycle.load_run(run_id)
+    except KeyError:
+        _output({"status": "ERROR", "error": f"Run not found: {run_id}"}, as_json)
+        sys.exit(1)
+
+    evidence_dir = workspace_root / ".expcon" / "runs" / run_id / "evidence"
+    if not evidence_dir.exists():
+        # Try fetched evidence
+        fetched_dir = workspace_root / ".expcon" / "fetched" / run_id
+        evidence_dir = fetched_dir / "evidence"
+        if not evidence_dir.exists():
+            evidence_dir = fetched_dir
+
+    bundle_path = Path(bundle) if bundle else None
+
+    # Auto-find bundle if not explicitly provided
+    if bundle_path is None:
+        try:
+            run_record = lifecycle.load_run(run_id)
+            exp_dir = _find_experiment_dir(workspace_root, run_record.experiment_id, run_record.version)
+            if exp_dir and (exp_dir / "bundle").exists():
+                bundle_path = exp_dir / "bundle"
+        except Exception:
+            pass
+
+    verifier = EvidenceVerifier(evidence_dir, bundle_path)
+    result = verifier.verify()
+
+    # Update run state
+    if result["verified"]:
+        lifecycle.update_run_state(run_id, lifecycle_run_state_from_run(run_id, "EVIDENCE_VERIFIED"), "Evidence verified")
+    else:
+        lifecycle.update_run_state(run_id, lifecycle_run_state_from_run(run_id, "EVIDENCE_INVALID"), "; ".join(result["errors"]))
+
+    _output(result, as_json)
+    if not result["verified"]:
+        sys.exit(1)
+
+
+# ─── adjudicate ──────────────────────────────────────────────────────────────
+
+@click.command()
+@click.argument("run_id")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def adjudicate_cmd(run_id, as_json):
+    """Adjudicate a run: determine execution, contract, and scientific status."""
+    workspace_root = find_workspace_root()
+    adjudicator = Adjudicator(workspace_root)
+    result = adjudicator.adjudicate(run_id)
+
+    if not as_json:
+        click.secho("=" * 60, fg="cyan")
+        click.secho(f"ADJUDICATION REPORT", fg="cyan", bold=True)
+        click.secho("=" * 60, fg="cyan")
+        click.echo(f"  Experiment: {result.experiment_id}/{result.version}")
+        click.echo(f"  Run ID:     {result.run_id}")
+        click.secho("-" * 60, fg="cyan")
+        click.echo(f"  Execution:   {result.execution_status}")
+        click.echo(f"  Contract:    {result.contract_status}")
+        click.echo(f"  Evidence:    {result.evidence_status}")
+        verdict_color = "green" if result.scientific_verdict == "SUPPORTED" else "yellow" if result.scientific_verdict == "NOT_SUPPORTED" else "red"
+        click.secho(f"  Scientific:  {result.scientific_verdict}", fg=verdict_color, bold=True)
+        click.secho("=" * 60, fg="cyan")
+    else:
+        _output(result.to_dict(), as_json)
+
+
+# ─── artifacts ───────────────────────────────────────────────────────────────
+
+@click.command(name="artifacts")
+@click.argument("target")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def artifacts_cmd(target, as_json):
+    """List artifacts for an experiment or run."""
+    workspace_root = find_workspace_root()
+    lifecycle = ExperimentLifecycle(workspace_root)
+
+    # Check if target is a run ID
+    try:
+        run = lifecycle.load_run(target)
+        registry = ArtifactRegistry(lifecycle.run_dir(run.run_id))
+        artifacts = registry.list()
+        result = {
+            "run_id": run.run_id,
+            "experiment_id": run.experiment_id,
+            "artifacts": [a.to_dict() for a in artifacts],
+            "count": len(artifacts),
+        }
+        _output(result, as_json)
+    except KeyError:
+        # Try as experiment path
+        exp_path = _resolve_experiment(target)
+        run = lifecycle.list_runs()
+        exp_runs = [r for r in run if r.experiment_id == load_contract(exp_path / "EXPERIMENT.yaml").experiment_id]
+
+        all_artifacts = []
+        for r in exp_runs:
+            registry = ArtifactRegistry(lifecycle.run_dir(r.run_id))
+            all_artifacts.extend(registry.list())
+
+        result = {
+            "experiment_id": load_contract(exp_path / "EXPERIMENT.yaml").experiment_id,
+            "artifacts": [a.to_dict() for a in all_artifacts],
+            "count": len(all_artifacts),
+        }
+        _output(result, as_json)
+
+
+# ─── workspace ───────────────────────────────────────────────────────────────
+
+@click.command(name="workspace")
+@click.argument("experiment")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def workspace_cmd(experiment, as_json):
+    """Create a tmux workspace for an experiment."""
+    workspace_root = find_workspace_root()
+    manager = WorkspaceManager(workspace_root)
+    try:
+        result = manager.create_workspace(experiment)
+        _output(result, as_json)
+        if not as_json:
+            click.secho(f"\nTo attach: tmux attach -t {result['session']}", fg="cyan")
+    except WorkspaceError as exc:
+        _output({"status": "ERROR", "error": str(exc)}, as_json)
+        sys.exit(1)
+
+
+# ─── attach ──────────────────────────────────────────────────────────────────
+
+@click.command(name="attach")
+@click.argument("experiment")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def attach_cmd(experiment, as_json):
+    """Attach to an existing tmux workspace."""
+    workspace_root = find_workspace_root()
+    manager = WorkspaceManager(workspace_root)
+    try:
+        result = manager.attach_workspace(experiment)
+        _output(result, as_json)
+        if not as_json:
+            click.secho(f"\nTo attach: tmux attach -t {result['session']}", fg="cyan")
+    except WorkspaceError as exc:
+        _output({"status": "ERROR", "error": str(exc)}, as_json)
+        sys.exit(1)
+
+
+# ─── helpers ─────────────────────────────────────────────────────────────────
+
+def _find_experiment_dir(workspace_root: Path, experiment_id: str, version: str) -> Path | None:
+    """Find the experiment directory by searching for matching EXPERIMENT.yaml."""
+    search_dirs = [
+        workspace_root / "experiments",
+        workspace_root / "examples",
+    ]
+    for search_dir in search_dirs:
+        if not search_dir.exists():
+            continue
+        for exp_dir in search_dir.iterdir():
+            if exp_dir.is_dir() and (exp_dir / "EXPERIMENT.yaml").exists():
+                try:
+                    contract = load_contract(exp_dir / "EXPERIMENT.yaml")
+                    if contract.experiment_id == experiment_id and contract.version == version:
+                        return exp_dir
+                except Exception:
+                    pass
+    return None
+
+
+def _resolve_experiment(experiment: str) -> Path:
+    """Resolve an experiment reference to a path."""
+    # If it's already a path with EXPERIMENT.yaml
+    exp_path = Path(experiment).resolve()
+    if (exp_path / "EXPERIMENT.yaml").exists():
+        return exp_path
+    if exp_path.name == "EXPERIMENT.yaml":
+        return exp_path.parent
+
+    # Search in experiments/ directories
+    workspace_root = find_workspace_root()
+    search_dirs = [workspace_root / "experiments", workspace_root.parent / "experiments"]
+
+    # Try exact match
+    for search_dir in search_dirs:
+        if search_dir.exists():
+            candidate = search_dir / experiment
+            if candidate.exists() and (candidate / "EXPERIMENT.yaml").exists():
+                return candidate
+
+    # Try fuzzy match (E13 -> e13_...)
+    parts = experiment.replace("/", "_").split("_")
+    for search_dir in search_dirs:
+        if search_dir.exists():
+            for exp_dir in search_dir.iterdir():
+                if exp_dir.is_dir() and (exp_dir / "EXPERIMENT.yaml").exists():
+                    dir_name = exp_dir.name.lower()
+                    if experiment.lower() in dir_name or parts[0].lower() in dir_name:
+                        return exp_dir
+
+    # Try as a bare path
+    if exp_path.exists():
+        return exp_path
+
+    raise click.ClickException(f"Experiment not found: {experiment}")

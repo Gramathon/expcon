@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Evidence Bundle Manifest",
+  "type": "object",
+  "required": ["evidence_id", "run_id", "experiment_id", "contract_hash", "bundle_id", "verified"],
+  "properties": {
+    "evidence_id": {"type": "string"},
+    "run_id": {"type": "string"},
+    "experiment_id": {"type": "string"},
+    "contract_hash": {"type": "string"},
+    "bundle_id": {"type": "string"},
+    "verified": {"type": "boolean"},
+    "artifacts": {"type": "array"},
+    "metrics": {"type": "object"},
+    "environment": {"type": "object"},
+    "verification_errors": {"type": "array"}
+  }
+}

@@ -1,0 +1,93 @@
+{
+  "contract_hash": "c6c6e9ee57f78a6843bb1d9172019977322af14525875f3e93a513415c8d408f",
+  "experiment_id": "E13_CANONICAL_KNEE_ACQUISITION_INVARIANCE_v002",
+  "frozen_at": "2026-08-20T17:02:30.917093+00:00",
+  "frozen_by": "expcon",
+  "frozen_scientific_fields": [
+    "experiment.id",
+    "experiment.version",
+    "hypothesis.statement",
+    "hypothesis.scientific_fingerprint",
+    "data",
+    "evaluation",
+    "outputs",
+    "reproducibility",
+    "scientific_parameters"
+  ],
+  "hashes": {
+    "execution_hash": "c78a5c9dc01b2aac2a1539dd7c3173ebe8181a1db95c141ce9119fc4af2836c6"
+  },
+  "identity": {
+    "bundle_id": "cfc5c40b0958c6fdeb0d3794e9990b59586c322027952d0f86bdffd539d4b404",
+    "contract_hash": "c6c6e9ee57f78a6843bb1d9172019977322af14525875f3e93a513415c8d408f",
+    "experiment_id": "E13_CANONICAL_KNEE_ACQUISITION_INVARIANCE_v002",
+    "version": "v002"
+  },
+  "locks": {
+    "configs": {},
+    "datasets": {},
+    "dependencies": "272723fb94fba15893c5504afce6815f729804f833a293e65dd57c2b3a89e66e",
+    "runner": "b850c95dfa217b8ece725897e2001abc5090cf94026d6c01b6dafc7742b20aa8",
+    "source": "290c340ccd40e73889d8a1f440a450da8ab095f85dcc80d8b6b2c0ec464198a7"
+  },
+  "scientific_parameters_hash": "a96df85bc4296980bfeeb71471d738959100b7475fd1817dd34fdcc35534eb57",
+  "scientific_parameters_snapshot": {
+    "data": {
+      "datasets": [
+        {
+          "id": "arafatshovon/fastmri-knee-val",
+          "name": "fastmri-knee-val",
+          "provider": "kaggle"
+        },
+        {
+          "id": "gramath/landmarks",
+          "name": "landmarks",
+          "provider": "kaggle"
+        },
+        {
+          "id": "gramath/rsna-competition-dataset",
+          "name": "rsna-competition-dataset",
+          "provider": "kaggle"
+        }
+      ],
+      "manifests": [
+        "manifests/dataset.json"
+      ],
+      "provider": "kaggle"
+    },
+    "evaluation": {
+      "acceptance": {
+        "median_volume_rmse_max": 0.05,
+        "p95_volume_rmse_max": 0.15
+      },
+      "primary_metric": "volume_level_median_probe_rmse",
+      "threshold": 0.05
+    },
+    "experiment.id": "E13_CANONICAL_KNEE_ACQUISITION_INVARIANCE_v002",
+    "experiment.version": "v002",
+    "hypothesis.statement": "A landmark-derived 2D coronal knee coordinate map is invariant to synthetic acquisition framing changes for the same knee, measured by probe RMSE below equivalence thresholds.",
+    "outputs": {
+      "required": [
+        "metrics/E13_A_AGGREGATE_RESULT.json",
+        "metrics/E13_A_PROBE_ERROR_BY_VOLUME.csv",
+        "metrics/E13_A_PERTURBATION_SUMMARY.csv"
+      ]
+    },
+    "reproducibility": {
+      "level": "seeded",
+      "seed": 20260816
+    },
+    "scientific_parameters": {
+      "dataset_identity": "fastmri-knee-val",
+      "equivalence_thresholds": {
+        "median_volume_rmse_max": 0.05,
+        "p95_volume_rmse_max": 0.15
+      },
+      "metric": "volume_level_median_probe_rmse",
+      "model_revision": "canonical_transform_v001",
+      "seed": 20260816,
+      "split": "canonical_geometry_stage_b"
+    }
+  },
+  "version": "v002"
+}

@@ -1,0 +1,29 @@
+{
+  "bundle_id": "cfc5c40b0958c6fdeb0d3794e9990b59586c322027952d0f86bdffd539d4b404",
+  "config_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "contract_hash": "c6c6e9ee57f78a6843bb1d9172019977322af14525875f3e93a513415c8d408f",
+  "created_at": "2026-08-20T17:02:31.292874+00:00",
+  "dataset_hashes": {},
+  "dependency_hash": "272723fb94fba15893c5504afce6815f729804f833a293e65dd57c2b3a89e66e",
+  "execution_hash": "c78a5c9dc01b2aac2a1539dd7c3173ebe8181a1db95c141ce9119fc4af2836c6",
+  "files": [
+    {
+      "relative_path": "resolved_contract.json",
+      "sha256": "03ed605836e5849674295fe2c22812df1b9bda50c47b88cdcec2cae1e2e456eb",
+      "size_bytes": 2305
+    },
+    {
+      "relative_path": "runner/kaggle_run_e13_acquisition_invariance.py",
+      "sha256": "f8c11547affb5de8a051bddb4e3d6cd1b1769a88e934cd216c2e854d3ca1fcf4",
+      "size_bytes": 2682
+    },
+    {
+      "relative_path": "source_manifest.json",
+      "sha256": "82c38dde305272f43cbbae563e43719fae53d62e49bcbee8c633d36d422fff60",
+      "size_bytes": 280
+    }
+  ],
+  "runner_hash": "b850c95dfa217b8ece725897e2001abc5090cf94026d6c01b6dafc7742b20aa8",
+  "scientific_hash": "a96df85bc4296980bfeeb71471d738959100b7475fd1817dd34fdcc35534eb57",
+  "source_hash": "290c340ccd40e73889d8a1f440a450da8ab095f85dcc80d8b6b2c0ec464198a7"
+}

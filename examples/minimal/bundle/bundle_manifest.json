@@ -1,0 +1,29 @@
+{
+  "bundle_id": "bd80e41ab7e58ba8bfd1b89edcbde722a60a32ee75c001e02ee855f31130c3a5",
+  "config_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "contract_hash": "5ec1a48b24807b3132edb130bec5644b639f5c3bc45b19ee05813abe0f2bc1b0",
+  "created_at": "2026-08-21T05:14:00.265640+00:00",
+  "dataset_hashes": {},
+  "dependency_hash": "272723fb94fba15893c5504afce6815f729804f833a293e65dd57c2b3a89e66e",
+  "execution_hash": "145e219b26196b87ded0b24113616da34003efe810266a28ec05a38925c8b11b",
+  "files": [
+    {
+      "relative_path": "resolved_contract.json",
+      "sha256": "76c055e12fd80a0f6878ef527f232253b2e73a5db5028bb5bdb6c995898830fc",
+      "size_bytes": 890
+    },
+    {
+      "relative_path": "runner/run_experiment.py",
+      "sha256": "7914662921175931995fee50ab551d592fd58c7c013aa4ed6dd4e711d3a48880",
+      "size_bytes": 618
+    },
+    {
+      "relative_path": "source_manifest.json",
+      "sha256": "5910530db13af19f01830817f7a5ce8580a5ac0694b0b2afed89228775780263",
+      "size_bytes": 255
+    }
+  ],
+  "runner_hash": "379c82627b9eefa5eb7a2144008e0de78e677249b93e33eb6a19365ddea000c8",
+  "scientific_hash": "040bcc2b2b3142d4b43b67b014612095daca1b854ce28754b60c071c32413d97",
+  "source_hash": "ed1eda7f8fc7d87d6eb5bdb52434468933ff18a06dbc8c59827a16eca540dbef"
+}

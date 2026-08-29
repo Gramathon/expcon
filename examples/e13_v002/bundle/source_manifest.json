@@ -1,0 +1,10 @@
+{
+  "entries": [
+    {
+      "relative_path": "scripts/kaggle_run_e13_acquisition_invariance.py",
+      "sha256": "f8c11547affb5de8a051bddb4e3d6cd1b1769a88e934cd216c2e854d3ca1fcf4",
+      "size_bytes": 2682
+    }
+  ],
+  "root": "/data/dev/repos/VScode/expcon/examples/e13_v002"
+}

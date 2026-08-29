@@ -1,0 +1,115 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Experiment Contract",
+  "type": "object",
+  "required": ["schema_version", "experiment", "hypothesis", "execution", "evaluation", "outputs", "reproducibility"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "experiment": {
+      "type": "object",
+      "required": ["id", "version", "title"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "pattern": "^v[0-9]+$"},
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "parent_experiment": {"type": ["string", "null"]}
+      }
+    },
+    "hypothesis": {
+      "type": "object",
+      "required": ["statement"],
+      "properties": {
+        "statement": {"type": "string", "minLength": 1},
+        "scientific_fingerprint": {"type": ["string", "null"]}
+      }
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "repository": {"type": "string"},
+        "dirty_tree_allowed": {"type": "boolean"},
+        "entrypoint": {"type": "string"}
+      }
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "provider": {"type": "string"},
+        "datasets": {"type": "array"},
+        "manifests": {"type": "array"}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "required": ["allowed_backends"],
+      "properties": {
+        "allowed_backends": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "accelerator": {
+          "type": "object",
+          "properties": {
+            "type": {"type": "string", "enum": ["none", "gpu", "tpu"]},
+            "model": {"type": "string"}
+          }
+        },
+        "stages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "entrypoint"],
+            "properties": {
+              "id": {"type": "string"},
+              "entrypoint": {"type": "string"},
+              "requires": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "properties": {
+        "python": {"type": "string"},
+        "dependency_lock": {"type": "string"},
+        "requirements": {"type": "array"}
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "required": ["primary_metric"],
+      "properties": {
+        "primary_metric": {"type": "string"},
+        "acceptance": {"type": "object"},
+        "threshold": {"type": ["number", "null"]}
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "required": ["required"],
+      "properties": {
+        "required": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+      }
+    },
+    "reproducibility": {
+      "type": "object",
+      "required": ["level"],
+      "properties": {
+        "level": {"type": "string", "enum": ["functional", "seeded", "framework_deterministic", "hardware_constrained", "bitwise"]},
+        "seed": {"type": ["integer", "null"]}
+      }
+    },
+    "scientific_parameters": {
+      "type": "object",
+      "properties": {
+        "dataset_identity": {"type": "string"},
+        "model_revision": {"type": "string"},
+        "split": {"type": "string"},
+        "seed": {"type": "integer"},
+        "learning_rate": {"type": ["number", "null"]},
+        "batch_size": {"type": ["integer", "null"]},
+        "epochs": {"type": ["integer", "null"]},
+        "metric": {"type": "string"}
+      }
+    }
+  }
+}

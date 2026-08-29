@@ -1,0 +1,29 @@
+{
+  "artifacts": [
+    {
+      "artifact_id": "art-metrics.json",
+      "artifact_type": "metrics",
+      "hash": "8a9ddbd404eab2db2ac9ca7db6e621492f1231a59903fbc858331458f7f87c67",
+      "path": "metrics.json"
+    }
+  ],
+  "bundle_id": "bd80e41ab7e58ba8bfd1b89edcbde722a60a32ee75c001e02ee855f31130c3a5",
+  "contract_hash": "5ec1a48b24807b3132edb130bec5644b639f5c3bc45b19ee05813abe0f2bc1b0",
+  "created_at": "2026-08-21T05:14:15.610361+00:00",
+  "environment": {},
+  "evidence_id": "ev-run-E00-b9dd0982",
+  "experiment_id": "E00",
+  "metrics": {
+    "accuracy": 0.85,
+    "metrics_hash": "be27da8f21e4ed52cd8289c0e0e491832c79b8174dec6534ab2d05f65a6d7239",
+    "primary_metric_value": 0.85,
+    "required_outputs": [
+      "metrics.json"
+    ],
+    "threshold": 0.5,
+    "verdict": "SUPPORTED"
+  },
+  "run_id": "run-E00-b9dd0982",
+  "verification_errors": [],
+  "verified": true
+}

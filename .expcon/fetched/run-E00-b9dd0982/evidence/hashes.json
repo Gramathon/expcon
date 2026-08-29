@@ -1,0 +1,50 @@
+{
+  "entries": [
+    {
+      "relative_path": "artifacts/metrics.json",
+      "sha256": "8a9ddbd404eab2db2ac9ca7db6e621492f1231a59903fbc858331458f7f87c67",
+      "size_bytes": 101
+    },
+    {
+      "relative_path": "artifacts.json",
+      "sha256": "f3749e2bb8c07dea6d336ceeff050964b55d50d64bbad7d9edbeefe6da475e60",
+      "size_bytes": 223
+    },
+    {
+      "relative_path": "environment.json",
+      "sha256": "b498b7956f2d4406557544361dddf8cc897e088500f0b42043325d89fd436949",
+      "size_bytes": 143
+    },
+    {
+      "relative_path": "evidence_manifest.json",
+      "sha256": "ec1331d8b88cdd37abfc919d8f79c7ea2bb0dc4fd590edce05f12c0bf8307a46",
+      "size_bytes": 881
+    },
+    {
+      "relative_path": "main/metrics.json",
+      "sha256": "8a9ddbd404eab2db2ac9ca7db6e621492f1231a59903fbc858331458f7f87c67",
+      "size_bytes": 101
+    },
+    {
+      "relative_path": "metrics/metrics.json",
+      "sha256": "8a9ddbd404eab2db2ac9ca7db6e621492f1231a59903fbc858331458f7f87c67",
+      "size_bytes": 101
+    },
+    {
+      "relative_path": "outputs/metrics.json",
+      "sha256": "8a9ddbd404eab2db2ac9ca7db6e621492f1231a59903fbc858331458f7f87c67",
+      "size_bytes": 101
+    },
+    {
+      "relative_path": "resolved_contract.json",
+      "sha256": "76c055e12fd80a0f6878ef527f232253b2e73a5db5028bb5bdb6c995898830fc",
+      "size_bytes": 890
+    },
+    {
+      "relative_path": "results.json",
+      "sha256": "17dda16a4bc1811137acabc701c36279630fa896f3267b17dd83377250910f6a",
+      "size_bytes": 425
+    }
+  ],
+  "root": "/data/dev/repos/VScode/expcon/.expcon/fetched/run-E00-b9dd0982/evidence"
+}

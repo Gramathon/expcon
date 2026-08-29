@@ -1,0 +1,21 @@
+{
+  "adjudicated_at": "2026-08-21T05:15:05.522729+00:00",
+  "adjudicator": "expcon",
+  "contract_status": "COMPLIANT",
+  "contract_valid": true,
+  "details": {
+    "accelerator": "none",
+    "backend": "local",
+    "bundle_id": "bd80e41ab7e58ba8bfd1b89edcbde722a60a32ee75c001e02ee855f31130c3a5",
+    "contract_hash": "5ec1a48b24807b3132edb130bec5644b639f5c3bc45b19ee05813abe0f2bc1b0",
+    "kernel": null,
+    "run_state": "EVIDENCE_VERIFIED"
+  },
+  "evidence_status": "VERIFIED",
+  "evidence_valid": true,
+  "execution_status": "COMPLETED",
+  "experiment_id": "E00",
+  "run_id": "run-E00-b9dd0982",
+  "scientific_verdict": "SUPPORTED",
+  "version": "v001"
+}

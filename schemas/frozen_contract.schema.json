@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Frozen Contract Lock",
+  "type": "object",
+  "required": ["contract_hash", "experiment_id", "version", "frozen_at", "identity", "scientific_parameters_hash", "locks"],
+  "properties": {
+    "contract_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "experiment_id": {"type": "string"},
+    "version": {"type": "string"},
+    "frozen_at": {"type": "string"},
+    "frozen_by": {"type": "string"},
+    "identity": {
+      "type": "object",
+      "required": ["experiment_id", "version", "contract_hash", "bundle_id"],
+      "properties": {
+        "experiment_id": {"type": "string"},
+        "version": {"type": "string"},
+        "contract_hash": {"type": "string"},
+        "bundle_id": {"type": "string"}
+      }
+    },
+    "scientific_parameters_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "locks": {
+      "type": "object",
+      "properties": {
+        "source": {"type": "string"},
+        "dependencies": {"type": "string"},
+        "datasets": {"type": "object"},
+        "configs": {"type": "object"},
+        "runner": {"type": "string"}
+      }
+    },
+    "frozen_scientific_fields": {"type": "array"}
+  }
+}

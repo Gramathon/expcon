@@ -1,0 +1,57 @@
+{
+  "contract_hash": "5ec1a48b24807b3132edb130bec5644b639f5c3bc45b19ee05813abe0f2bc1b0",
+  "experiment_id": "E00",
+  "frozen_at": "2026-08-21T05:05:45.283429+00:00",
+  "frozen_by": "expcon",
+  "frozen_scientific_fields": [
+    "experiment.id",
+    "experiment.version",
+    "hypothesis.statement",
+    "hypothesis.scientific_fingerprint",
+    "data",
+    "evaluation",
+    "outputs",
+    "reproducibility",
+    "scientific_parameters"
+  ],
+  "hashes": {
+    "execution_hash": "145e219b26196b87ded0b24113616da34003efe810266a28ec05a38925c8b11b"
+  },
+  "identity": {
+    "bundle_id": "bd80e41ab7e58ba8bfd1b89edcbde722a60a32ee75c001e02ee855f31130c3a5",
+    "contract_hash": "5ec1a48b24807b3132edb130bec5644b639f5c3bc45b19ee05813abe0f2bc1b0",
+    "experiment_id": "E00",
+    "version": "v001"
+  },
+  "locks": {
+    "configs": {},
+    "datasets": {},
+    "dependencies": "272723fb94fba15893c5504afce6815f729804f833a293e65dd57c2b3a89e66e",
+    "runner": "379c82627b9eefa5eb7a2144008e0de78e677249b93e33eb6a19365ddea000c8",
+    "source": "ed1eda7f8fc7d87d6eb5bdb52434468933ff18a06dbc8c59827a16eca540dbef"
+  },
+  "scientific_parameters_hash": "040bcc2b2b3142d4b43b67b014612095daca1b854ce28754b60c071c32413d97",
+  "scientific_parameters_snapshot": {
+    "evaluation": {
+      "primary_metric": "accuracy",
+      "threshold": 0.5
+    },
+    "experiment.id": "E00",
+    "experiment.version": "v001",
+    "hypothesis.statement": "The system works end-to-end",
+    "outputs": {
+      "required": [
+        "metrics.json"
+      ]
+    },
+    "reproducibility": {
+      "level": "seeded",
+      "seed": 42
+    },
+    "scientific_parameters": {
+      "metric": "accuracy",
+      "seed": 42
+    }
+  },
+  "version": "v001"
+}

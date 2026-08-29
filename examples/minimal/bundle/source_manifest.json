@@ -1,0 +1,10 @@
+{
+  "entries": [
+    {
+      "relative_path": "scripts/run_experiment.py",
+      "sha256": "7914662921175931995fee50ab551d592fd58c7c013aa4ed6dd4e711d3a48880",
+      "size_bytes": 618
+    }
+  ],
+  "root": "/data/dev/repos/VScode/expcon/examples/minimal"
+}

@@ -1,0 +1,51 @@
+{
+  "environment": {
+    "dependency_lock": "uv.lock",
+    "python": "3.10"
+  },
+  "evaluation": {
+    "primary_metric": "accuracy",
+    "threshold": 0.5
+  },
+  "execution": {
+    "accelerator": {
+      "type": "none"
+    },
+    "allowed_backends": [
+      "local"
+    ],
+    "stages": [
+      {
+        "entrypoint": "scripts/run_experiment.py",
+        "id": "main",
+        "requires": []
+      }
+    ]
+  },
+  "experiment": {
+    "id": "E00",
+    "title": "Minimal example experiment",
+    "version": "v001"
+  },
+  "hypothesis": {
+    "statement": "The system works end-to-end"
+  },
+  "outputs": {
+    "required": [
+      "metrics.json"
+    ]
+  },
+  "reproducibility": {
+    "level": "seeded",
+    "seed": 42
+  },
+  "schema_version": 1,
+  "scientific_parameters": {
+    "metric": "accuracy",
+    "seed": 42
+  },
+  "source": {
+    "dirty_tree_allowed": false,
+    "repository": "."
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Experiment Run Record",
+  "type": "object",
+  "required": ["run_id", "experiment_id", "version", "state", "backend", "created_at"],
+  "properties": {
+    "run_id": {"type": "string"},
+    "experiment_id": {"type": "string"},
+    "version": {"type": "string"},
+    "state": {"type": "string"},
+    "backend": {"type": "string"},
+    "created_at": {"type": "string"},
+    "updated_at": {"type": "string"},
+    "contract_hash": {"type": "string"},
+    "bundle_id": {"type": "string"},
+    "kernel": {"type": ["string", "null"]},
+    "accelerator": {"type": "string"},
+    "events": {"type": "array"}
+  }
+}

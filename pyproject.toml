@@ -1,0 +1,23 @@
+[project]
+name = "expcon"
+version = "0.1.0"
+description = "Experiment Control System for AI-assisted ML research"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Expcon" }]
+dependencies = [
+    "click>=8.1",
+    "jsonschema>=4.0",
+    "pyyaml>=6.0",
+    "tabulate>=0.9",
+]
+
+[project.scripts]
+expcon = "expcon.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

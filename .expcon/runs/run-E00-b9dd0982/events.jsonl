@@ -1,0 +1,10 @@
+{"accelerator": "none", "backend": "local", "event": "RUN_CREATED", "run_id": "run-E00-b9dd0982", "timestamp": "2026-08-21T05:14:08.674823+00:00"}
+{"event": "CONTRACT_VERIFIED", "reason": "Contract verified", "run_id": "run-E00-b9dd0982", "timestamp": "2026-08-21T05:14:08.675337+00:00"}
+{"event": "BACKEND_SELECTED", "reason": "Backend: local", "run_id": "run-E00-b9dd0982", "timestamp": "2026-08-21T05:14:08.678559+00:00"}
+{"event": "DATA_VERIFIED", "reason": "Data verified", "run_id": "run-E00-b9dd0982", "timestamp": "2026-08-21T05:14:08.679064+00:00"}
+{"event": "STAGE_STARTED", "reason": "Stages started", "run_id": "run-E00-b9dd0982", "timestamp": "2026-08-21T05:14:08.679555+00:00"}
+{"event": "STAGE_COMPLETED", "reason": "Stages completed", "run_id": "run-E00-b9dd0982", "timestamp": "2026-08-21T05:14:08.716904+00:00"}
+{"event": "RESULTS_AVAILABLE", "reason": "Results available", "run_id": "run-E00-b9dd0982", "timestamp": "2026-08-21T05:14:08.717297+00:00"}
+{"event": "EVIDENCE_FETCHED", "reason": "Evidence fetched", "run_id": "run-E00-b9dd0982", "timestamp": "2026-08-21T05:14:15.576148+00:00"}
+{"event": "EVIDENCE_VERIFIED", "reason": "Evidence verified", "run_id": "run-E00-b9dd0982", "timestamp": "2026-08-21T05:14:15.845182+00:00"}
+{"event": "ADJUDICATED", "reason": "Adjudication complete", "run_id": "run-E00-b9dd0982", "timestamp": "2026-08-21T05:15:05.523291+00:00"}

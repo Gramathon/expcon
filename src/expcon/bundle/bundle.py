@@ -1,0 +1,360 @@
+"""Bundle creation, manifest, and verification.
+
+A bundle is a content-addressed package.  Its identity (bundle_id) is
+derived from a canonical manifest of:
+  - contract hash
+  - source hash
+  - dependency hash
+  - dataset hashes
+  - runner hash
+
+Any protected modification of bundle contents fails verification.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import tarfile
+import tempfile
+import zipfile
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Optional
+
+from expcon.contract.contract import ExperimentContract, load_contract
+from expcon.contract.canonical import (
+    compute_contract_hash,
+    compute_scientific_hash,
+    compute_execution_hash,
+)
+from expcon.hashing.canonical import canonical_bytes, canonical_json
+from expcon.hashing.digest import sha256_bytes, file_sha256
+from expcon.hashing.manifest import compute_directory_manifest, verify_directory_manifest
+
+
+class BundleError(Exception):
+    """Raised when bundle creation or verification fails."""
+
+
+@dataclass
+class BundleManifest:
+    """The canonical manifest for a bundle."""
+
+    bundle_id: str
+    contract_hash: str
+    scientific_hash: str
+    execution_hash: str
+    source_hash: str
+    dependency_hash: str
+    dataset_hashes: dict[str, str]
+    runner_hash: str
+    config_hash: str
+    files: list[dict[str, Any]] = field(default_factory=list)
+    created_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "bundle_id": self.bundle_id,
+            "contract_hash": self.contract_hash,
+            "scientific_hash": self.scientific_hash,
+            "execution_hash": self.execution_hash,
+            "source_hash": self.source_hash,
+            "dependency_hash": self.dependency_hash,
+            "dataset_hashes": self.dataset_hashes,
+            "runner_hash": self.runner_hash,
+            "config_hash": self.config_hash,
+            "files": self.files,
+            "created_at": self.created_at,
+        }
+
+
+def bundle_id_for(manifest: dict[str, Any]) -> str:
+    """Compute the bundle_id from a bundle manifest dict."""
+    # Only include protected fields in the identity
+    protected = {
+        "contract_hash": manifest["contract_hash"],
+        "scientific_hash": manifest["scientific_hash"],
+        "execution_hash": manifest["execution_hash"],
+        "source_hash": manifest["source_hash"],
+        "dependency_hash": manifest["dependency_hash"],
+        "dataset_hashes": manifest["dataset_hashes"],
+        "runner_hash": manifest["runner_hash"],
+        "config_hash": manifest["config_hash"],
+    }
+    return sha256_bytes(canonical_bytes(protected))
+
+
+class BundleBuilder:
+    """Builds a content-addressed bundle for an experiment."""
+
+    def __init__(self, experiment_dir: Path | str):
+        self.experiment_dir = Path(experiment_dir).resolve()
+        self.bundle_dir = self.experiment_dir / "bundle"
+
+    def build(self) -> tuple[Path, str]:
+        """Build the bundle and return (bundle_path, bundle_id)."""
+        from datetime import datetime, timezone
+
+        contract = load_contract(self.experiment_dir / "EXPERIMENT.yaml")
+        contract_data = contract.data
+
+        contract_hash = compute_contract_hash(contract_data)
+        scientific_hash = compute_scientific_hash(contract_data)
+        execution_hash = compute_execution_hash(contract_data)
+
+        # Compute source hash (only from declared source directories)
+        source_root = self._resolve_source_root(contract)
+        source_manifest = compute_directory_manifest(source_root, skip_hidden=True, include=["src/", "scripts/", "configs/"])
+        source_hash = sha256_bytes(canonical_bytes(source_manifest.to_dict()))
+
+        # Compute dependency hash
+        dep_hash = self._compute_dependency_hash(contract)
+
+        # Compute dataset hashes
+        dataset_hashes = self._compute_dataset_hashes(contract)
+
+        # Compute runner hash
+        runner_hash = self._compute_runner_hash(contract)
+
+        # Compute config hash
+        config_hash = self._compute_config_hash(contract)
+
+        manifest_dict = {
+            "bundle_id": "",
+            "contract_hash": contract_hash,
+            "scientific_hash": scientific_hash,
+            "execution_hash": execution_hash,
+            "source_hash": source_hash,
+            "dependency_hash": dep_hash,
+            "dataset_hashes": dataset_hashes,
+            "runner_hash": runner_hash,
+            "config_hash": config_hash,
+            "files": [],
+        }
+        bundle_id = bundle_id_for(manifest_dict)
+
+        # Create bundle directory
+        if self.bundle_dir.exists():
+            shutil.rmtree(self.bundle_dir)
+        self.bundle_dir.mkdir(parents=True)
+
+        # Copy resolved contract
+        resolved_contract = self.bundle_dir / "resolved_contract.json"
+        resolved_contract.write_text(
+            json.dumps(contract_data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+        # Copy source manifest
+        source_manifest_file = self.bundle_dir / "source_manifest.json"
+        source_manifest_file.write_text(
+            json.dumps(source_manifest.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+        # Copy configs
+        configs_dir = self.bundle_dir / "configs"
+        configs_dir.mkdir(exist_ok=True)
+        self._copy_configs(contract, configs_dir)
+
+        # Copy runner
+        runner_dir = self.bundle_dir / "runner"
+        runner_dir.mkdir(exist_ok=True)
+        self._copy_runner(contract, runner_dir)
+
+        # Write bundle manifest
+        manifest_dict["files"] = self._collect_file_hashes()
+        manifest_dict["bundle_id"] = bundle_id
+        manifest_dict["created_at"] = datetime.now(timezone.utc).isoformat()
+
+        manifest_file = self.bundle_dir / "bundle_manifest.json"
+        manifest_file.write_text(
+            json.dumps(manifest_dict, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+        # Write hashes.json
+        hashes_file = self.bundle_dir / "hashes.json"
+        hashes_file.write_text(
+            json.dumps(
+                {
+                    "bundle_id": bundle_id,
+                    "contract_hash": contract_hash,
+                    "scientific_hash": scientific_hash,
+                    "execution_hash": execution_hash,
+                    "source_hash": source_hash,
+                    "dependency_hash": dep_hash,
+                    "config_hash": config_hash,
+                    "runner_hash": runner_hash,
+                    "dataset_hashes": dataset_hashes,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        return self.bundle_dir, bundle_id
+
+    def _resolve_source_root(self, contract: ExperimentContract) -> Path:
+        repo = contract.get("source", "repository", default=".")
+        if str(repo) == ".":
+            # Use the experiment dir itself as source root
+            # This ensures the source hash is deterministic regardless of bundle state
+            return self.experiment_dir
+        return (self.experiment_dir / str(repo)).resolve()
+
+    def _compute_dependency_hash(self, contract: ExperimentContract) -> str:
+        lock_file = contract.get("environment", "dependency_lock", default="uv.lock")
+        lock_path = self.experiment_dir / str(lock_file)
+        if not lock_path.exists():
+            lock_path = self.experiment_dir.parent / str(lock_file)
+        if lock_path.exists():
+            return file_sha256(lock_path)
+        return sha256_bytes(canonical_bytes({"missing": str(lock_file)}))
+
+    def _compute_dataset_hashes(self, contract: ExperimentContract) -> dict[str, str]:
+        result = {}
+        datasets = contract.get("data", "datasets", default=[])
+        if datasets:
+            for ds in datasets:
+                if isinstance(ds, dict) and "path" in ds:
+                    ds_path = self.experiment_dir / str(ds["path"])
+                    if ds_path.exists():
+                        result[str(ds["path"])] = file_sha256(ds_path)
+                    else:
+                        result[str(ds["path"])] = sha256_bytes(canonical_bytes({"missing": str(ds["path"])}))
+        return result
+
+    def _compute_runner_hash(self, contract: ExperimentContract) -> str:
+        stages = contract.get("execution", "stages", default=[])
+        if stages:
+            entries = []
+            for stage in stages:
+                if isinstance(stage, dict) and "entrypoint" in stage:
+                    ep_path = self.experiment_dir / str(stage["entrypoint"])
+                    if ep_path.exists():
+                        entries.append({"entrypoint": stage["entrypoint"], "sha256": file_sha256(ep_path)})
+                    else:
+                        entries.append({"entrypoint": stage["entrypoint"], "sha256": "MISSING"})
+            return sha256_bytes(canonical_bytes(entries))
+        return sha256_bytes(canonical_bytes({"no_stages": True}))
+
+    def _compute_config_hash(self, contract: ExperimentContract) -> str:
+        configs = contract.get("execution", "configs", default=[])
+        if not configs:
+            # Try to find config files in a configs directory
+            configs_dir = self.experiment_dir / "configs"
+            if configs_dir.exists():
+                configs = [str(p.relative_to(self.experiment_dir)) for p in configs_dir.iterdir() if p.is_file()]
+
+        entries = []
+        for cfg in configs:
+            cfg_path = self.experiment_dir / str(cfg)
+            if cfg_path.exists():
+                entries.append({"path": cfg, "sha256": file_sha256(cfg_path)})
+        return sha256_bytes(canonical_bytes(entries))
+
+    def _copy_configs(self, contract: ExperimentContract, dest: Path) -> None:
+        configs_dir = self.experiment_dir / "configs"
+        if configs_dir.exists():
+            for f in configs_dir.iterdir():
+                if f.is_file():
+                    shutil.copy2(f, dest / f.name)
+
+    def _copy_runner(self, contract: ExperimentContract, dest: Path) -> None:
+        stages = contract.get("execution", "stages", default=[])
+        for stage in stages:
+            if isinstance(stage, dict) and "entrypoint" in stage:
+                ep_path = self.experiment_dir / str(stage["entrypoint"])
+                if ep_path.exists():
+                    shutil.copy2(ep_path, dest / Path(stage["entrypoint"]).name)
+
+    def _collect_file_hashes(self) -> list[dict[str, Any]]:
+        files = []
+        for path in sorted(self.bundle_dir.rglob("*")):
+            if path.is_file():
+                files.append(
+                    {
+                        "relative_path": str(path.relative_to(self.bundle_dir)),
+                        "size_bytes": path.stat().st_size,
+                        "sha256": file_sha256(path),
+                    }
+                )
+        return files
+
+
+class BundleVerifier:
+    """Verifies bundle integrity against its manifest."""
+
+    def __init__(self, bundle_path: Path | str):
+        self.bundle_path = Path(bundle_path).resolve()
+        self.manifest_path = self.bundle_path / "bundle_manifest.json"
+
+    def verify(self) -> dict[str, Any]:
+        """Verify the bundle. Returns status dict."""
+        errors = []
+
+        if not self.manifest_path.exists():
+            return {"status": "FAIL", "errors": ["bundle_manifest.json not found"]}
+
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+
+        # Verify each file in manifest
+        for entry in manifest.get("files", []):
+            file_path = self.bundle_path / entry["relative_path"]
+            if not file_path.exists():
+                errors.append(f"MISSING: {entry['relative_path']}")
+                continue
+            actual_size = file_path.stat().st_size
+            if actual_size != entry["size_bytes"]:
+                errors.append(f"SIZE_MISMATCH: {entry['relative_path']}")
+                continue
+            actual_sha = file_sha256(file_path)
+            if actual_sha != entry["sha256"]:
+                errors.append(f"HASH_MISMATCH: {entry['relative_path']}")
+
+        # Check for extra files not in manifest (excluding manifest files themselves)
+        manifest_files = {e["relative_path"] for e in manifest.get("files", [])}
+        protected_extras = {"bundle_manifest.json", "hashes.json"}
+        for path in self.bundle_path.rglob("*"):
+            if path.is_file():
+                rel = str(path.relative_to(self.bundle_path))
+                if rel not in manifest_files and rel not in protected_extras:
+                    errors.append(f"EXTRA_FILE: {rel}")
+
+        # Verify bundle_id matches
+        expected_id = bundle_id_for(manifest)
+        if expected_id != manifest.get("bundle_id"):
+            errors.append("BUNDLE_ID_MISMATCH")
+
+        # Verify contract_hash
+        resolved = self.bundle_path / "resolved_contract.json"
+        if resolved.exists():
+            from expcon.contract.canonical import compute_contract_hash
+
+            try:
+                contract_data = json.loads(resolved.read_text(encoding="utf-8"))
+                actual_hash = compute_contract_hash(contract_data)
+                if actual_hash != manifest.get("contract_hash"):
+                    errors.append("CONTRACT_HASH_MISMATCH")
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                errors.append("CONTRACT_JSON_CORRUPT")
+
+        return {
+            "status": "PASS" if not errors else "FAIL",
+            "errors": errors,
+            "bundle_id": manifest.get("bundle_id"),
+            "file_count": len(manifest.get("files", [])),
+        }
+
+
+def verify_bundle(bundle_path: Path | str) -> dict[str, Any]:
+    """Convenience function to verify a bundle."""
+    verifier = BundleVerifier(bundle_path)
+    return verifier.verify()
+
+
+def create_bundle(experiment_dir: Path | str) -> tuple[Path, str]:
+    """Convenience function to create a bundle."""
+    builder = BundleBuilder(experiment_dir)
+    return builder.build()

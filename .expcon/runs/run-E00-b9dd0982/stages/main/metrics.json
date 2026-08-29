@@ -1,0 +1,6 @@
+{
+  "accuracy": 0.85,
+  "threshold": 0.5,
+  "primary_metric_value": 0.85,
+  "verdict": "SUPPORTED"
+}

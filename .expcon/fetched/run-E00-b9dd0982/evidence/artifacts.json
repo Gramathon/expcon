@@ -1,0 +1,10 @@
+{
+  "artifacts": [
+    {
+      "artifact_id": "art-metrics.json",
+      "artifact_type": "metrics",
+      "hash": "8a9ddbd404eab2db2ac9ca7db6e621492f1231a59903fbc858331458f7f87c67",
+      "path": "metrics.json"
+    }
+  ]
+}

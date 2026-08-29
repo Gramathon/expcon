@@ -1,0 +1,43 @@
+schema_version: 1
+
+experiment:
+  id: E00
+  version: v001
+  title: "Minimal example experiment"
+
+hypothesis:
+  statement: "The system works end-to-end"
+
+source:
+  repository: "."
+  dirty_tree_allowed: false
+
+execution:
+  allowed_backends:
+    - local
+  accelerator:
+    type: none
+  stages:
+    - id: main
+      entrypoint: scripts/run_experiment.py
+      requires: []
+
+environment:
+  python: "3.10"
+  dependency_lock: "uv.lock"
+
+evaluation:
+  primary_metric: "accuracy"
+  threshold: 0.5
+
+outputs:
+  required:
+    - metrics.json
+
+reproducibility:
+  level: seeded
+  seed: 42
+
+scientific_parameters:
+  seed: 42
+  metric: accuracy

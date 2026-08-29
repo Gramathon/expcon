@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Artifact Record",
+  "type": "object",
+  "required": ["artifact_id", "artifact_type", "hash", "experiment_id", "run_id"],
+  "properties": {
+    "artifact_id": {"type": "string"},
+    "artifact_type": {"type": "string"},
+    "hash": {"type": "string"},
+    "experiment_id": {"type": "string"},
+    "run_id": {"type": "string"},
+    "parent_inputs": {"type": "array"},
+    "producer_stage": {"type": "string"},
+    "created_at": {"type": "string"},
+    "verification_state": {"type": "string"},
+    "path": {"type": "string"},
+    "metadata": {"type": "object"}
+  }
+}
