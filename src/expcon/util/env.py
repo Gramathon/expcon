@@ -21,12 +21,24 @@ SECRET_PATTERNS = [
 ]
 
 
-def redact_secrets(data: dict[str, Any]) -> dict[str, Any]:
-    """Recursively redact values whose keys look like secrets."""
-    result = {}
+def redact_secrets(data: Any) -> Any:
+    """Recursively redact secret-bearing values, including Colab ConnectionInfo."""
+    if isinstance(data, list):
+        return [redact_secrets(item) for item in data]
+    if not isinstance(data, dict):
+        return data
+    result: dict[str, Any] = {}
     for key, value in data.items():
+        normalized = str(key).replace("_", "").replace("-", "").lower()
+        if normalized in {"connectioninfo", "connection info"}:
+            # ConnectionInfo is operationally transient; keeping host metadata
+            # has no value to Expcon and risks retaining its bearer token.
+            result[key] = "***REDACTED***"
+            continue
         if isinstance(value, dict):
             result[key] = redact_secrets(value)
+        elif isinstance(value, list):
+            result[key] = [redact_secrets(item) for item in value]
         elif isinstance(value, str):
             if any(p.search(str(key)) for p in SECRET_PATTERNS):
                 result[key] = "***REDACTED***"

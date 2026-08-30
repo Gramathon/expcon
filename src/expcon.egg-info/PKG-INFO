@@ -149,6 +149,10 @@ expcon run experiments/e13_v002/EXPERIMENT.yaml --backend local
 # Or run on Kaggle (data-locality mode, no GPU)
 expcon run experiments/e13_v002/EXPERIMENT.yaml --backend kaggle --kernel smoke
 
+# Inspect official Colab Runtime API availability and eligible specs
+expcon colab doctor
+expcon colab specs
+
 # Fetch and verify evidence
 expcon fetch <run_id>
 expcon verify <run_id>
@@ -183,8 +187,23 @@ expcon workspace experiments/e13_v002/
 | `expcon artifacts <exp-or-run>` | List artifacts with provenance |
 | `expcon workspace <exp>` | Create tmux operations workspace |
 | `expcon attach <exp>` | Attach to existing tmux workspace |
+| `expcon colab doctor/specs/runtimes/inspect` | Operator tools for the official Colab Runtime API |
 
 All commands support `--json` for machine-readable output.
+
+### Colab runtime backend
+
+The Colab adapter uses the official allowlisted `v1beta` Runtime API for
+capability discovery, runtime provisioning, operations polling, observation,
+and release. It records an exact runtime image version when supplied by the
+provider and never stores `ConnectionInfo` or its short-lived token.
+
+The published Runtime API manages runtimes but does not provide an arbitrary
+bundle-execution or output-fetch endpoint. Consequently `expcon run --backend
+colab` provisions only when frozen requirements are met, then deterministically
+marks the run `BLOCKED` rather than inventing an execution channel. An approved
+artifact transport/execution integration can be added later without changing
+the scientific contract.
 
 ## Build and verify a release
 

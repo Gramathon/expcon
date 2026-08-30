@@ -20,6 +20,7 @@ from expcon.lifecycle.state import ExperimentState
 from expcon.bundle.bundle import BundleBuilder, BundleVerifier
 from expcon.runner.runner import StageRunner, RunContext
 from expcon.runner.backends import LocalBackend, KaggleBackend
+from expcon.backends.colab import ColabApiClient, ColabBackend, ColabClientError
 from expcon.evidence.evidence import EvidenceVerifier
 from expcon.adjudication.adjudication import Adjudicator
 from expcon.workspace.workspace import WorkspaceManager
@@ -176,6 +177,49 @@ def doctor_cmd(as_json):
     }
     checks["status"] = "READY" if checks["skill"]["bundled"] else "NOT_READY"
     _output(checks, as_json)
+
+
+@click.group(name="colab")
+def colab_cmd():
+    """Inspect the official Google Colab Runtime API (allowlist required)."""
+
+
+@colab_cmd.command(name="doctor")
+@click.option("--json", "as_json", is_flag=True)
+def colab_doctor_cmd(as_json):
+    client = ColabApiClient()
+    result: dict[str, Any] = {"api": "v1beta", "configured": client.configured, "allowlist": "required"}
+    if client.configured:
+        try:
+            result["runtime_specs"] = len(client.runtime_specs())
+            result["status"] = "READY"
+        except ColabClientError as exc:
+            result["status"] = "UNAVAILABLE"
+            result["error"] = str(exc)
+    else:
+        result.update({"status": "NOT_CONFIGURED", "remediation": "Set EXPCON_COLAB_ACCESS_TOKEN with the Colaboratory OAuth scope."})
+    _output(result, as_json)
+
+
+@colab_cmd.command(name="specs")
+@click.option("--json", "as_json", is_flag=True)
+def colab_specs_cmd(as_json):
+    specs = ColabApiClient().runtime_specs()
+    _output({"runtime_specs": specs, "count": len(specs)}, as_json)
+
+
+@colab_cmd.command(name="runtimes")
+@click.option("--json", "as_json", is_flag=True)
+def colab_runtimes_cmd(as_json):
+    runtimes = ColabApiClient().runtimes()
+    _output({"runtimes": runtimes, "count": len(runtimes)}, as_json)
+
+
+@colab_cmd.command(name="inspect")
+@click.argument("runtime")
+@click.option("--json", "as_json", is_flag=True)
+def colab_inspect_cmd(runtime, as_json):
+    _output(ColabApiClient().runtime(runtime), as_json)
 
 
 @click.group(name="skill")
@@ -442,6 +486,8 @@ def run_cmd(experiment, backend, kernel, accelerator, as_json):
         backend_impl = LocalBackend(workspace_root)
     elif backend == "kaggle":
         backend_impl = KaggleBackend(workspace_root)
+    elif backend == "colab":
+        backend_impl = ColabBackend(workspace_root)
     else:
         _output({"status": "ERROR", "error": f"Unknown backend: {backend}"}, as_json)
         sys.exit(1)
@@ -455,6 +501,7 @@ def run_cmd(experiment, backend, kernel, accelerator, as_json):
         contract_hash=lock["contract_hash"],
         kernel=kernel,
         accelerator=accelerator,
+        environment={"requirements": contract.get("execution", "requirements", default={})},
     )
 
     # Transition states through the state machine
@@ -486,7 +533,8 @@ def run_cmd(experiment, backend, kernel, accelerator, as_json):
         }
         _output(result, as_json)
     except Exception as exc:
-        lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, "FAILED_EXECUTION"), str(exc))
+        failure_state = "BLOCKED" if str(exc).startswith("BLOCKED:") else "FAILED_EXECUTION"
+        lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, failure_state), str(exc))
         _output({"status": "ERROR", "error": str(exc), "run_id": run.run_id}, as_json)
         sys.exit(1)
 

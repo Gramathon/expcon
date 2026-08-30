@@ -55,9 +55,26 @@ class RunContext:
 
 
 class ExecutionBackend:
-    """Abstract backend interface."""
+    """Capability-oriented backend interface.
+
+    ``submit``/``cancel`` remain compatibility shims for the v0.1 runner.
+    Provider adapters should expose resolution, provisioning, execution,
+    observation, evidence retrieval, and release as separate operations.
+    """
 
     name: str = "abstract"
+
+    def resolve(self, requirements: dict[str, Any]) -> dict[str, Any]:
+        """Determine whether the provider can satisfy frozen requirements."""
+        return {"satisfied": True, "requirements": requirements}
+
+    def provision(self, bundle: Path, context: RunContext) -> str:
+        """Provision a provider run; retained as an explicit lifecycle hook."""
+        return self.submit(bundle, context)
+
+    def execute(self, bundle: Path, context: RunContext) -> str:
+        """Execute a provisioned workload where the provider supports it."""
+        return self.submit(bundle, context)
 
     def submit(self, bundle: Path, context: RunContext) -> str:
         """Submit a bundle for execution. Returns a run_id."""
@@ -74,6 +91,10 @@ class ExecutionBackend:
     def cancel(self, run_id: str) -> bool:
         """Cancel a running job."""
         raise NotImplementedError
+
+    def release(self, run_id: str) -> bool:
+        """Release provider resources after completion or a blocked run."""
+        return self.cancel(run_id)
 
 
 class LocalBackend(ExecutionBackend):
