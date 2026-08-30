@@ -1,0 +1,21 @@
+# Code owners for this project
+# Anyone making changes to these files will require review from the specified owners
+
+# All Python files require review
+*.py @Gramathon
+
+# Configuration files
+*.yml @Gramathon
+*.yaml @Gramathon
+*.toml @Gramathon
+*.cfg @Gramathon
+
+# Documentation
+*.md @Gramathon
+docs/ @Gramathon
+
+# Critical files
+requirements*.txt @Gramathon
+setup.py @Gramathon
+pyproject.toml @Gramathon
+.gitignore @Gramathon
