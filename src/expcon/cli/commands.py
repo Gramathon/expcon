@@ -28,6 +28,44 @@ from expcon.workspace.workspace import WorkspaceManager
 from expcon.artifacts.artifact import ArtifactRegistry
 from expcon.util.path import find_workspace_root
 
+SKILL_REFERENCE_NAMES = (
+    "lifecycle.md",
+    "scientific-vs-operational.md",
+    "artifacts-and-evidence.md",
+    "backends.md",
+    "local.md",
+    "kaggle.md",
+    "colab.md",
+)
+
+
+def _skill_root():
+    return files("expcon").joinpath("resources", "skills", "experiment-contract")
+
+
+def _skill_health(root) -> dict[str, Any]:
+    """Check deterministic completeness/compatibility of a skill bundle."""
+    import expcon
+    import yaml
+
+    skill_file = root.joinpath("SKILL.md") if hasattr(root, "joinpath") else Path(root) / "SKILL.md"
+    present = skill_file.is_file()
+    metadata: dict[str, Any] = {}
+    if present:
+        text = skill_file.read_text(encoding="utf-8")
+        if text.startswith("---"):
+            metadata = yaml.safe_load(text.split("---", 2)[1]) or {}
+    references = root.joinpath("references") if hasattr(root, "joinpath") else Path(root) / "references"
+    missing = [name for name in SKILL_REFERENCE_NAMES if not references.joinpath(name).is_file()]
+    minimum = str(metadata.get("metadata", {}).get("minimum_expcon_version", "0.0.0"))
+    def version_tuple(value: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in value.split(".") if part.isdigit())
+    compatible = present and not missing and version_tuple(expcon.__version__) >= version_tuple(minimum)
+    return {"present": present, "references_present": not missing, "missing_references": missing,
+            "skill_version": metadata.get("metadata", {}).get("skill_version"),
+            "minimum_expcon_version": minimum, "supported_contract_schema": metadata.get("metadata", {}).get("supported_contract_schema"),
+            "compatible": compatible}
+
 
 def _output(data: Any, as_json: bool = False) -> None:
     """Output data in JSON or human-readable format."""
@@ -169,14 +207,14 @@ def doctor_cmd(as_json):
     """Report core, optional, skill, and project capabilities."""
     import expcon
     root = find_workspace_root()
-    skill = files("expcon").joinpath("resources", "skills", "experiment-contract", "SKILL.md")
+    skill = _skill_root()
     checks = {
         "core": {"expcon": expcon.__version__, "python": sys.version.split()[0]},
         "tools": {name: bool(shutil.which(name)) for name in ("git", "uv", "tmux", "kaggle")},
-        "skill": {"bundled": skill.is_file(), "path": str(skill)},
+        "skill": {**_skill_health(skill), "path": str(skill.joinpath("SKILL.md"))},
         "project": {"pyproject_toml": (root / "pyproject.toml").exists(), "expcon": (root / ".expcon").exists()},
     }
-    checks["status"] = "READY" if checks["skill"]["bundled"] else "NOT_READY"
+    checks["status"] = "READY" if checks["skill"]["compatible"] else "NOT_READY"
     _output(checks, as_json)
 
 
@@ -304,18 +342,22 @@ def skill_cmd():
 @skill_cmd.command(name="path")
 def skill_path_cmd():
     """Print the canonical installed skill path."""
-    click.echo(str(files("expcon").joinpath("resources", "skills", "experiment-contract", "SKILL.md")))
+    click.echo(str(_skill_root().joinpath("SKILL.md")))
 
 
 @skill_cmd.command(name="status")
+@click.option("--target", type=click.Path(path_type=Path), default=None,
+              help="Existing agent skills directory to inspect.")
 @click.option("--json", "as_json", is_flag=True)
-def skill_status_cmd(as_json):
+def skill_status_cmd(target, as_json):
     """Report bundled skill availability and a detected Codex installation."""
-    source = files("expcon").joinpath("resources", "skills", "experiment-contract", "SKILL.md")
-    codex_home = os.environ.get("CODEX_HOME")
-    target = Path(codex_home) / "skills" / "experiment-contract" / "SKILL.md" if codex_home else None
-    _output({"bundled": source.is_file(), "canonical_path": str(source),
-             "installed": bool(target and target.exists()), "installed_path": str(target) if target else None}, as_json)
+    source = _skill_root()
+    if target is None and os.environ.get("CODEX_HOME"):
+        target = Path(os.environ["CODEX_HOME"]) / "skills"
+    installed_root = target / "experiment-contract" if target else None
+    installed = _skill_health(installed_root) if installed_root and installed_root.exists() else None
+    _output({"canonical_path": str(source.joinpath("SKILL.md")), "bundled": _skill_health(source),
+             "installed": installed, "installed_path": str(installed_root) if installed_root else None}, as_json)
 
 
 @skill_cmd.command(name="install")
@@ -333,9 +375,15 @@ def skill_install_cmd(target, as_json):
         raise click.ClickException(f"Skill target must be an existing directory: {target}")
     destination = target / "experiment-contract"
     destination.mkdir(exist_ok=True)
-    source = files("expcon").joinpath("resources", "skills", "experiment-contract", "SKILL.md")
-    (destination / "SKILL.md").write_text(source.read_text(), encoding="utf-8")
-    _output({"status": "INSTALLED", "path": str(destination / "SKILL.md")}, as_json)
+    source = _skill_root()
+    (destination / "SKILL.md").write_text(source.joinpath("SKILL.md").read_text(), encoding="utf-8")
+    refs = destination / "references"
+    refs.mkdir(exist_ok=True)
+    for name in SKILL_REFERENCE_NAMES:
+        refs.joinpath(name).write_text(source.joinpath("references", name).read_text(), encoding="utf-8")
+    health = _skill_health(destination)
+    _output({"status": "INSTALLED" if health["compatible"] else "INCOMPLETE", "path": str(destination / "SKILL.md"),
+             "references": list(SKILL_REFERENCE_NAMES), "compatibility": health}, as_json)
 
 
 # ─── inspect ─────────────────────────────────────────────────────────────────

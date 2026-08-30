@@ -107,6 +107,22 @@ expcon --version
 Expcon installs as a global tool. It does **not** install inside every ML project's
 `.venv`.
 
+## Agent integration
+
+Expcon ships a deterministic CLI/library, a canonical agent skill, and focused
+backend playbooks. The skill teaches procedure and permissions; the CLI decides
+identity, lifecycle, provenance, and verification; adapters perform provider
+operations. Provider API details do not belong in scientific contracts.
+
+```
+AGENT → EXPCON SKILL → EXPCON CLI → LOCAL | KAGGLE (API + CLI) | COLAB (Runtime API)
+```
+
+Install or inspect the bundled skill with `expcon skill path`, `expcon skill
+status --json`, and `expcon skill install --target <agent-skills-dir>`. The
+installed bundle includes lifecycle, identity, artifact/evidence, and backend
+playbooks; it never includes credentials.
+
 ## Quick Start
 
 ```bash

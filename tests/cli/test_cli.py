@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 from click.testing import CliRunner
+from importlib.resources import files
 
 from expcon.cli import main
 
@@ -141,3 +142,44 @@ class TestCLI:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert "runs" in data
+
+    def test_skill_resources_are_complete_and_safe(self):
+        root = files("expcon").joinpath("resources", "skills", "experiment-contract")
+        skill = root.joinpath("SKILL.md").read_text()
+        assert "backend_playbooks" in skill
+        for name in ("lifecycle.md", "scientific-vs-operational.md", "artifacts-and-evidence.md", "backends.md", "local.md", "kaggle.md", "colab.md"):
+            assert root.joinpath("references", name).is_file()
+        assert "kaggle.json" not in skill.lower()
+        assert "EXPCON_COLAB_ACCESS_TOKEN" not in skill
+
+    def test_skill_playbooks_encode_backend_safety_rules(self):
+        root = files("expcon").joinpath("resources", "skills", "experiment-contract", "references")
+        kaggle = root.joinpath("kaggle.md").read_text()
+        colab = root.joinpath("colab.md").read_text()
+        backends = root.joinpath("backends.md").read_text()
+        lifecycle = root.joinpath("lifecycle.md").read_text()
+        scientific = root.joinpath("scientific-vs-operational.md").read_text()
+
+        assert "Public API" in kaggle and "Kaggle CLI" in kaggle
+        assert "exact version" in kaggle
+        assert "latest" in kaggle and "Never fetch" in kaggle
+        assert "Kaggle COMPLETE != EVIDENCE_VERIFIED" in lifecycle
+        assert "execute=false" in colab and "fetch=false" in colab
+        assert "browser" in colab and "private" in colab
+        assert "Transport fallback" in backends and "Backend fallback" in backends
+        assert "expcon diff" in scientific
+
+    def test_skill_install_copies_references_and_status_detects_missing(self, tmp_path):
+        runner = CliRunner()
+        target = tmp_path / "skills"
+        target.mkdir()
+        result = runner.invoke(main, ["skill", "install", "--target", str(target), "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["compatibility"]["compatible"]
+        installed = target / "experiment-contract"
+        assert (installed / "references" / "kaggle.md").exists()
+        (installed / "references" / "colab.md").unlink()
+        result = runner.invoke(main, ["skill", "status", "--target", str(target), "--json"])
+        assert result.exit_code == 0
+        assert "colab.md" in json.loads(result.output)["installed"]["missing_references"]

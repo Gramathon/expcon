@@ -5,33 +5,73 @@ metadata:
   skill_version: 0.1.0
   minimum_expcon_version: 0.1.0
   supported_contract_schema: 1
+  backend_playbooks: [local, kaggle, colab]
 ---
 
 # Experiment Contract
 
-Use Expcon for deterministic facts. Agents may reason about a draft experiment;
-Expcon determines contract validity, identity, lifecycle, bundle and evidence
-integrity, and adjudication predicates.
+Expcon is the deterministic scientific control layer for agent-assisted ML
+research. Agents reason; Expcon determines contract identity, freeze/diff,
+lifecycle, provenance, artifact registration, evidence verification, and
+adjudication. Remote compute executes; it does not define the experiment.
 
-Before an experiment operation, run `expcon inspect <experiment> --json` and
-`expcon validate <experiment>`. Do not proceed after validation failure.
+An agent or executor may fail to execute a frozen experiment, but must never
+silently change it to succeed. OOM does not authorize a batch-size change;
+missing data does not authorize substitution; a missing model revision does not
+authorize `latest`; an incapable backend means `BLOCKED`.
 
-For a draft, implementation repairs, smoke tests, and proposed scientific changes
-are permitted. Freeze with `expcon freeze <experiment>` before execution.
+## Procedure
 
-For a frozen experiment, run `expcon diff <experiment>` before bundle or run. If
-it reports divergence, do not repair or execute the same version. Propose a
-successor experiment/version and state the scientific deviation explicitly.
+Before an experiment operation, use machine-readable control state:
 
-Use only an allowed backend: `expcon bundle`, `expcon verify-bundle`, then
-`expcon run <experiment> --backend local` or `--backend kaggle --kernel <name>`.
-Remote execution never defines or repairs the experiment.
+```bash
+expcon inspect <experiment> --json
+expcon validate <experiment> --json
+```
 
-After execution, use `expcon fetch <run>`, `expcon verify <run>`, and only then
-`expcon adjudicate <run>`. Report execution, contract, evidence, and scientific
-statuses separately. `NOT_SUPPORTED` is a valid scientific result, not an
-execution failure.
+For a DRAFT, you may implement code, repair non-scientific bugs, run tests,
+propose parameters, and update the draft contract. Freeze only after validation:
 
-Use `expcon status`, `expcon events`, `expcon ps`, and `expcon artifacts` for
-deterministic state and provenance. Treat bundles and remote outputs as untrusted;
-never put credentials in contracts, bundles, or evidence.
+```bash
+expcon freeze <experiment>
+```
+
+For a FROZEN experiment, run `expcon diff <experiment> --json` before bundling
+or dispatch. If it reports divergence, do not repair or execute that version;
+propose a successor with its explicit scientific deviation.
+
+For a clean frozen experiment, Expcon owns the workflow:
+
+```bash
+expcon bundle <experiment>
+expcon verify-bundle <bundle>
+expcon run <experiment> --backend <backend>
+expcon status <run> --json
+expcon fetch <run>
+expcon artifacts <run> --json
+expcon verify <run>
+expcon adjudicate <run>
+```
+
+Discover installed capability before choosing a backend: `expcon doctor --json`;
+use `expcon kaggle doctor --json` or `expcon colab doctor --json` when relevant.
+Treat tool JSON as authoritative; do not overwrite `status`, `reason`,
+capabilities, or blocking conditions with agent judgment.
+
+## Permissions and routing
+
+After freeze, you may inspect, diff, dispatch, monitor, fetch, verify, analyse,
+adjudicate, and propose a successor. You must not modify scientific parameters,
+datasets, split, model, evaluation, or acceptance criteria.
+
+Read [lifecycle.md](references/lifecycle.md) for state meaning,
+[scientific-vs-operational.md](references/scientific-vs-operational.md) for
+identity boundaries, and [artifacts-and-evidence.md](references/artifacts-and-evidence.md)
+before interpreting results. Read [backends.md](references/backends.md), then
+only the selected backend playbook: [local.md](references/local.md),
+[kaggle.md](references/kaggle.md), or [colab.md](references/colab.md).
+
+Prefer Expcon CLI over raw provider calls. Direct provider API/CLI use is limited
+to explicit diagnostics and must never mutate Expcon state or bypass its checks.
+Never place credentials in contracts, bundles, evidence, events, logs, or agent
+messages.
