@@ -118,6 +118,11 @@ class ColabBackend(ExecutionBackend):
         self.workspace_root = Path(workspace_root).resolve()
         self.client = client or ColabApiClient()
 
+    def capabilities(self) -> dict[str, Any]:
+        return {"generic": {"execute": False}, "training": {"managed": False},
+                "sampling": {"native": False}, "artifacts": {"fetch_checkpoint": False},
+                "observability": {"status": True}, "provision": True, "release": True}
+
     def resolve(self, requirements: dict[str, Any]) -> dict[str, Any]:
         specs = self.client.runtime_specs()
         accelerator = requirements.get("accelerator", {}) if requirements else {}

@@ -5,7 +5,7 @@ metadata:
   skill_version: 0.1.0
   minimum_expcon_version: 0.1.0
   supported_contract_schema: 1
-  backend_playbooks: [local, kaggle, colab]
+  backend_playbooks: [local, kaggle, colab, tinker]
 ---
 
 # Experiment Contract
@@ -54,7 +54,8 @@ expcon adjudicate <run>
 ```
 
 Discover installed capability before choosing a backend: `expcon doctor --json`;
-use `expcon kaggle doctor --json` or `expcon colab doctor --json` when relevant.
+use `expcon kaggle doctor --json`, `expcon colab doctor --json`, or
+`expcon tinker doctor --json` when relevant.
 Treat tool JSON as authoritative; do not overwrite `status`, `reason`,
 capabilities, or blocking conditions with agent judgment.
 
@@ -69,7 +70,8 @@ Read [lifecycle.md](references/lifecycle.md) for state meaning,
 identity boundaries, and [artifacts-and-evidence.md](references/artifacts-and-evidence.md)
 before interpreting results. Read [backends.md](references/backends.md), then
 only the selected backend playbook: [local.md](references/local.md),
-[kaggle.md](references/kaggle.md), or [colab.md](references/colab.md).
+[kaggle.md](references/kaggle.md), [colab.md](references/colab.md), or
+[tinker.md](references/tinker.md).
 
 Prefer Expcon CLI over raw provider calls. Direct provider API/CLI use is limited
 to explicit diagnostics and must never mutate Expcon state or bypass its checks.

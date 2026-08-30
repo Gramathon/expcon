@@ -13,6 +13,9 @@ dependencies = [
     "tabulate>=0.9",
 ]
 
+[project.optional-dependencies]
+tinker = ["tinker>=0.24; python_version >= '3.11'"]
+
 [project.scripts]
 expcon = "expcon.cli:main"
 

@@ -21,7 +21,7 @@ Expcon is a **deterministic experiment control plane** that:
 
 - Defines and freezes scientific experiment identity
 - Governs valid experiment lifecycle transitions
-- Dispatches execution to replaceable environments (local, Kaggle)
+- Dispatches controlled execution to Local, Kaggle, Colab-runtime, and Tinker adapters
 - Registers generated artifacts with full provenance
 - Verifies returned evidence for integrity
 - Separates execution success from scientific conclusions
@@ -71,13 +71,15 @@ Instead: `current experiment → INVALID/FAILED/BLOCKED → diagnosis → propos
             ║ evidence         ║
             ╚════════╤═════════╝
                      │
-          ┌──────────┴──────────┐
-          ▼                     ▼
-        LOCAL                 KAGGLE
-                                │
-                         data / compute
-          │                     │
-          └──────────┬──────────┘
+          ┌──────────┴──────────┬──────────────┐
+          ▼                     ▼              ▼
+        LOCAL                 KAGGLE          TINKER
+                         generic ML/DL    distributed LLM
+                           / notebooks     post-training
+                                             │
+                                  native sampling | OpenAI-compatible | Anthropic-compatible
+          │                     │              │
+          └─────────────────────┴──────────────┘
                      ▼
                   ARTIFACTS
                      │
@@ -115,7 +117,7 @@ identity, lifecycle, provenance, and verification; adapters perform provider
 operations. Provider API details do not belong in scientific contracts.
 
 ```
-AGENT → EXPCON SKILL → EXPCON CLI → LOCAL | KAGGLE (API + CLI) | COLAB (Runtime API)
+AGENT → EXPCON SKILL → EXPCON CLI → LOCAL | KAGGLE (API + CLI) | COLAB (Runtime API) | TINKER (SDK + CLI)
 ```
 
 Install or inspect the bundled skill with `expcon skill path`, `expcon skill
@@ -153,6 +155,9 @@ expcon run experiments/e13_v002/EXPERIMENT.yaml --backend kaggle --kernel smoke
 # Inspect official Colab Runtime API availability and eligible specs
 expcon colab doctor
 expcon colab specs
+
+# Inspect optional managed Tinker LLM-training support
+expcon tinker doctor --json
 
 # Fetch and verify evidence
 expcon fetch <run_id>
@@ -202,6 +207,7 @@ exit non-zero so agents and CI must stop rather than guess.
 | `expcon run <experiment> --backend local [--accelerator none] [--json]` | Verifies frozen state, clean diff, backend allowance, and bundle; then runs declared stages locally. |
 | `expcon run <experiment> --backend kaggle --kernel owner/slug [--accelerator none] [--json]` | Uses the hybrid Kaggle adapter. A remote run must resolve an exact kernel version before Expcon accepts its remote identity. |
 | `expcon run <experiment> --backend colab [--json]` | Uses the official allowlisted Colab Runtime API for provisioning/observation. It blocks rather than inventing a workload-execution channel. |
+| `expcon run <experiment> --backend tinker [--json]` | Runs the frozen local LLM-training driver against the optional Tinker managed service. The driver must record stable Tinker run/session identity before provenance can be accepted. |
 | `expcon ps [--json]` | Lists persisted runs. |
 | `expcon status <run> [--json]` | Shows canonical Expcon state plus backend observation. |
 | `expcon events <run> [--json]` | Shows the append-only event ledger. |
@@ -235,6 +241,17 @@ than associating output from a newer kernel version with old evidence.
 | `expcon colab specs [--json]` | Lists eligible Runtime API specs, including CPU/GPU/TPU shape information returned by Colab. |
 | `expcon colab runtimes [--json]` | Lists the caller’s API-managed runtimes. |
 | `expcon colab inspect <runtime> [--json]` | Gets a runtime observation with `ConnectionInfo` redacted. |
+
+### Tinker operator commands
+
+| Command | What it does |
+|---|---|
+| `expcon tinker doctor [--json]` | Reports optional public SDK and CLI availability, credential-safe authentication/reachability, and capability namespaces. |
+| `expcon tinker runs [--json]` / `run inspect <id>` | Lists or inspects training runs through the documented `RestClient`. |
+| `expcon tinker sessions [--json]` / `session inspect <id>` | Lists or inspects service sessions through `RestClient`. |
+| `expcon tinker checkpoints [training-run] [--json]` / `checkpoint inspect <tinker://…>` | Lists or inspects remote checkpoints without publishing or deleting them. |
+| `expcon tinker checkpoint fetch <tinker://…> --output-dir <dir> [--json]` | Fetches a checkpoint archive through the SDK, rejects unsafe paths, and produces a local manifest. |
+| `expcon tinker trace <session> [--json]` | Exports a session trace through the documented API as operational observation. |
 
 ### Colab runtime backend
 
@@ -278,6 +295,27 @@ it treats the remote execution as bound to a run. The documented CLI output
 command retrieves latest output only; it is therefore refused for an older
 version-bound run rather than silently attaching newer output. This fail-closed
 rule protects kernel-version and artifact provenance.
+
+### Tinker managed LLM backend
+
+Tinker is not generic GPU execution. It is an optional integration (`expcon[tinker]`)
+for Tinker's managed LoRA post-training, distributed forward/backward and optimizer
+operations, native sampling, and checkpoint lifecycle. A frozen local experiment
+driver controls data, loss/reward, evaluation, and the public Tinker SDK calls;
+the service supplies distributed model computation. The frozen driver source is
+therefore part of Expcon identity.
+
+Training-state and sampler-weights checkpoints are separate provenance types.
+Expcon requires a stable training-run or session identity from the driver, hashes
+downloaded checkpoint contents locally, and does not auto-publish checkpoints or
+push to Hugging Face. `weights_only` and `weights_and_optimizer` resume modes are
+distinct: failure to restore full state blocks rather than silently restarting.
+
+Tinker additionally offers beta OpenAI-compatible and Anthropic-compatible
+inference surfaces. They are **Tinker-hosted** protocols, never OpenAI- or
+Anthropic-hosted inference. Expcon records `provider=tinker` and the precise
+native/OpenAI-compatible/Anthropic-compatible transport; it does not silently
+fall back between protocols because rendering semantics may differ.
 
 ## Build and verify a release
 

@@ -65,6 +65,11 @@ class ExecutionBackend:
 
     name: str = "abstract"
 
+    def capabilities(self) -> dict[str, Any]:
+        """Describe public capability namespaces without provider inference."""
+        return {"generic": {"execute": True}, "training": {}, "sampling": {},
+                "artifacts": {}, "observability": {"status": True}}
+
     def resolve(self, requirements: dict[str, Any]) -> dict[str, Any]:
         """Determine whether the provider can satisfy frozen requirements."""
         return {"satisfied": True, "requirements": requirements}
@@ -105,6 +110,11 @@ class LocalBackend(ExecutionBackend):
 
     def __init__(self, workspace_root: Path | str):
         self.workspace_root = Path(workspace_root).resolve()
+
+    def capabilities(self) -> dict[str, Any]:
+        return {"generic": {"execute": True}, "training": {"managed": False},
+                "sampling": {"native": True}, "artifacts": {"fetch_checkpoint": True},
+                "observability": {"status": True, "logs": True}}
 
     def submit(self, bundle: Path, context: RunContext) -> str:
         run_id = context.run_id if context.run_id else f"local-{context.experiment_id}-" + __import__("uuid").uuid4().hex[:8]
@@ -287,6 +297,12 @@ class KaggleBackend(ExecutionBackend):
         self.kaggle_bin = os.environ.get("KAGGLE_BIN", "kaggle")
         self.api = api or KaggleApiTransport()
         self.cli = cli or KaggleCliTransport(self.kaggle_bin)
+
+    def capabilities(self) -> dict[str, Any]:
+        return {"generic": {"execute": True}, "training": {"managed": False},
+                "sampling": {"native": False}, "artifacts": {"fetch_checkpoint": True},
+                "observability": {"status": True, "logs": True},
+                "competition": {"submit": bool(self.cli.capabilities().get("competition.submit"))}}
 
     def submit(self, bundle: Path, context: RunContext) -> str:
         import uuid

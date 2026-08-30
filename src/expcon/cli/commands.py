@@ -22,6 +22,7 @@ from expcon.runner.runner import StageRunner, RunContext
 from expcon.runner.backends import LocalBackend, KaggleBackend, _valid_kaggle_ref
 from expcon.backends.colab import ColabApiClient, ColabBackend, ColabClientError
 from expcon.backends.kaggle import KaggleApiTransport, KaggleCliTransport, KaggleTransportError
+from expcon.backends.tinker import TinkerBackend, TinkerCliTransport, TinkerSdkTransport
 from expcon.evidence.evidence import EvidenceVerifier
 from expcon.adjudication.adjudication import Adjudicator
 from expcon.workspace.workspace import WorkspaceManager
@@ -36,6 +37,7 @@ SKILL_REFERENCE_NAMES = (
     "local.md",
     "kaggle.md",
     "colab.md",
+    "tinker.md",
 )
 
 
@@ -210,7 +212,7 @@ def doctor_cmd(as_json):
     skill = _skill_root()
     checks = {
         "core": {"expcon": expcon.__version__, "python": sys.version.split()[0]},
-        "tools": {name: bool(shutil.which(name)) for name in ("git", "uv", "tmux", "kaggle")},
+        "tools": {name: bool(shutil.which(name)) for name in ("git", "uv", "tmux", "kaggle", "tinker")},
         "skill": {**_skill_health(skill), "path": str(skill.joinpath("SKILL.md"))},
         "project": {"pyproject_toml": (root / "pyproject.toml").exists(), "expcon": (root / ".expcon").exists()},
     }
@@ -332,6 +334,97 @@ def kaggle_competition_inspect_cmd(competition, as_json):
     if not competition.replace("-", "").replace("_", "").isalnum():
         raise click.ClickException("Invalid competition ref")
     _output(KaggleApiTransport().competition_info(competition), as_json)
+
+
+@click.group(name="tinker")
+def tinker_cmd():
+    """Operator tools for the optional managed Tinker LLM training backend."""
+
+
+def _tinker_backend() -> TinkerBackend:
+    return TinkerBackend(find_workspace_root())
+
+
+@tinker_cmd.command(name="doctor")
+@click.option("--json", "as_json", is_flag=True)
+def tinker_doctor_cmd(as_json):
+    """Report public SDK/CLI availability without exposing credentials."""
+    sdk, cli = TinkerSdkTransport(), TinkerCliTransport()
+    sdk_result = sdk.diagnostics()
+    result = {"sdk": sdk_result, "cli": cli.capabilities(),
+              "capabilities": _tinker_backend().capabilities(),
+              "status": "READY" if sdk_result["authenticated"] else "NOT_READY"}
+    _output(result, as_json)
+
+
+@tinker_cmd.command(name="runs")
+@click.option("--json", "as_json", is_flag=True)
+def tinker_runs_cmd(as_json):
+    _output({"training_runs": TinkerSdkTransport().list_training_runs()}, as_json)
+
+
+@tinker_cmd.group(name="run")
+def tinker_run_cmd():
+    """Inspect Tinker training resources through RestClient."""
+
+
+@tinker_run_cmd.command(name="inspect")
+@click.argument("training_run")
+@click.option("--json", "as_json", is_flag=True)
+def tinker_run_inspect_cmd(training_run, as_json):
+    _output(TinkerSdkTransport().get_training_run(training_run), as_json)
+
+
+@tinker_cmd.command(name="sessions")
+@click.option("--json", "as_json", is_flag=True)
+def tinker_sessions_cmd(as_json):
+    _output({"sessions": TinkerSdkTransport().list_sessions()}, as_json)
+
+
+@tinker_cmd.group(name="session")
+def tinker_session_cmd():
+    """Inspect Tinker sessions through RestClient."""
+
+
+@tinker_session_cmd.command(name="inspect")
+@click.argument("session")
+@click.option("--json", "as_json", is_flag=True)
+def tinker_session_inspect_cmd(session, as_json):
+    _output(TinkerSdkTransport().get_session(session), as_json)
+
+
+@tinker_cmd.command(name="checkpoints")
+@click.argument("training_run", required=False)
+@click.option("--json", "as_json", is_flag=True)
+def tinker_checkpoints_cmd(training_run, as_json):
+    _output({"checkpoints": TinkerSdkTransport().list_checkpoints(training_run)}, as_json)
+
+
+@tinker_cmd.group(name="checkpoint")
+def tinker_checkpoint_cmd():
+    """Inspect or safely download Tinker checkpoints; never publish/delete."""
+
+
+@tinker_checkpoint_cmd.command(name="inspect")
+@click.argument("tinker_path")
+@click.option("--json", "as_json", is_flag=True)
+def tinker_checkpoint_inspect_cmd(tinker_path, as_json):
+    _output(TinkerSdkTransport().checkpoint_info(tinker_path), as_json)
+
+
+@tinker_checkpoint_cmd.command(name="fetch")
+@click.argument("tinker_path")
+@click.option("--output-dir", type=click.Path(path_type=Path), required=True)
+@click.option("--json", "as_json", is_flag=True)
+def tinker_checkpoint_fetch_cmd(tinker_path, output_dir, as_json):
+    _output(_tinker_backend().fetch_checkpoint(tinker_path, output_dir), as_json)
+
+
+@tinker_cmd.command(name="trace")
+@click.argument("session")
+@click.option("--json", "as_json", is_flag=True)
+def tinker_trace_cmd(session, as_json):
+    _output(TinkerSdkTransport().export_session_trace(session), as_json)
 
 
 @click.group(name="skill")
@@ -610,6 +703,8 @@ def run_cmd(experiment, backend, kernel, accelerator, as_json):
         backend_impl = KaggleBackend(workspace_root)
     elif backend == "colab":
         backend_impl = ColabBackend(workspace_root)
+    elif backend == "tinker":
+        backend_impl = TinkerBackend(workspace_root)
     else:
         _output({"status": "ERROR", "error": f"Unknown backend: {backend}"}, as_json)
         sys.exit(1)
@@ -716,6 +811,8 @@ def status_cmd(run_id, as_json):
         backend = LocalBackend(workspace_root)
     elif run.backend == "kaggle":
         backend = KaggleBackend(workspace_root)
+    elif run.backend == "tinker":
+        backend = TinkerBackend(workspace_root)
     else:
         backend = None
 
@@ -793,6 +890,8 @@ def fetch_cmd(run_id, output_dir, as_json):
         backend = LocalBackend(workspace_root)
     elif run.backend == "kaggle":
         backend = KaggleBackend(workspace_root)
+    elif run.backend == "tinker":
+        backend = TinkerBackend(workspace_root)
     else:
         _output({"status": "ERROR", "error": f"Unknown backend: {run.backend}"}, as_json)
         sys.exit(1)

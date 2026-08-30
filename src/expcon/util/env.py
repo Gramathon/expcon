@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -21,8 +22,34 @@ SECRET_PATTERNS = [
 ]
 
 
+def _known_secret_values() -> tuple[str, ...]:
+    """Return configured values which must never escape diagnostic output."""
+    return tuple(
+        value for value in (
+            os.environ.get("TINKER_API_KEY"),
+            os.environ.get("EXPCON_COLAB_ACCESS_TOKEN"),
+        ) if value
+    )
+
+
+def _is_signed_url(value: str) -> bool:
+    """Recognise credential-bearing download URLs without retaining them."""
+    lowered = value.lower()
+    return value.startswith(("http://", "https://")) and any(
+        marker in lowered
+        for marker in ("signature=", "x-amz-signature", "x-goog-signature", "access_token=")
+    )
+
+
 def redact_secrets(data: Any) -> Any:
     """Recursively redact secret-bearing values, including Colab ConnectionInfo."""
+    if isinstance(data, str):
+        if _is_signed_url(data):
+            return "***REDACTED***"
+        redacted = data
+        for secret in _known_secret_values():
+            redacted = redacted.replace(secret, "***REDACTED***")
+        return redacted
     if isinstance(data, list):
         return [redact_secrets(item) for item in data]
     if not isinstance(data, dict):
@@ -43,7 +70,7 @@ def redact_secrets(data: Any) -> Any:
             if any(p.search(str(key)) for p in SECRET_PATTERNS):
                 result[key] = "***REDACTED***"
             else:
-                result[key] = value
+                result[key] = redact_secrets(value)
         else:
             result[key] = value
     return result

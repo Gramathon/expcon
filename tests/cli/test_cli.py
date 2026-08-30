@@ -147,7 +147,7 @@ class TestCLI:
         root = files("expcon").joinpath("resources", "skills", "experiment-contract")
         skill = root.joinpath("SKILL.md").read_text()
         assert "backend_playbooks" in skill
-        for name in ("lifecycle.md", "scientific-vs-operational.md", "artifacts-and-evidence.md", "backends.md", "local.md", "kaggle.md", "colab.md"):
+        for name in ("lifecycle.md", "scientific-vs-operational.md", "artifacts-and-evidence.md", "backends.md", "local.md", "kaggle.md", "colab.md", "tinker.md"):
             assert root.joinpath("references", name).is_file()
         assert "kaggle.json" not in skill.lower()
         assert "EXPCON_COLAB_ACCESS_TOKEN" not in skill
@@ -159,6 +159,7 @@ class TestCLI:
         backends = root.joinpath("backends.md").read_text()
         lifecycle = root.joinpath("lifecycle.md").read_text()
         scientific = root.joinpath("scientific-vs-operational.md").read_text()
+        tinker = root.joinpath("tinker.md").read_text()
 
         assert "Public API" in kaggle and "Kaggle CLI" in kaggle
         assert "exact version" in kaggle
@@ -168,6 +169,9 @@ class TestCLI:
         assert "browser" in colab and "private" in colab
         assert "Transport fallback" in backends and "Backend fallback" in backends
         assert "expcon diff" in scientific
+        assert "Tinker is a managed distributed LLM" in tinker
+        assert "weights_and_optimizer" in tinker
+        assert "provider=tinker" in tinker
 
     def test_skill_install_copies_references_and_status_detects_missing(self, tmp_path):
         runner = CliRunner()
@@ -179,6 +183,7 @@ class TestCLI:
         assert data["compatibility"]["compatible"]
         installed = target / "experiment-contract"
         assert (installed / "references" / "kaggle.md").exists()
+        assert (installed / "references" / "tinker.md").exists()
         (installed / "references" / "colab.md").unlink()
         result = runner.invoke(main, ["skill", "status", "--target", str(target), "--json"])
         assert result.exit_code == 0

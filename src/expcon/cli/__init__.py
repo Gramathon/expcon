@@ -26,6 +26,7 @@ from expcon.cli.commands import (
     skill_cmd,
     colab_cmd,
     kaggle_cmd,
+    tinker_cmd,
 )
 
 
@@ -63,6 +64,7 @@ main.add_command(doctor_cmd)
 main.add_command(skill_cmd)
 main.add_command(colab_cmd)
 main.add_command(kaggle_cmd)
+main.add_command(tinker_cmd)
 
 
 if __name__ == "__main__":
