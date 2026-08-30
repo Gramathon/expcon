@@ -164,32 +164,76 @@ expcon adjudicate <run_id>
 expcon workspace experiments/e13_v002/
 ```
 
-## CLI Reference
+## Complete CLI reference
 
-| Command | Description |
+`<experiment>` accepts an experiment directory or `EXPERIMENT.yaml`; `<run>` is
+an Expcon run ID. Commands marked `--json` emit stable machine-readable data.
+Exit code `0` means success; validation, verification, and frozen-diff failures
+exit non-zero so agents and CI must stop rather than guess.
+
+### Project and skill setup
+
+| Command | What it does |
 |---|---|
-| `expcon init` | Initialize a new experiment contract |
-| `expcon doctor` | Inspect installed and project capabilities |
-| `expcon skill path/install/status` | Manage the bundled agent skill safely |
-| `expcon inspect <exp>` | Inspect an experiment contract |
-| `expcon validate <exp>` | Validate contract structure |
-| `expcon freeze <exp>` | Freeze contract (compute identity, write lock) |
-| `expcon diff <exp>` | Detect scientific divergence from frozen state |
-| `expcon bundle <exp>` | Create content-addressed bundle |
-| `expcon verify-bundle <bundle>` | Verify bundle integrity |
-| `expcon run <exp> --backend` | Execute on local or Kaggle backend |
-| `expcon ps` | List all runs |
-| `expcon status <run>` | Get run status |
-| `expcon events <run>` | Show run event log |
-| `expcon fetch <run>` | Fetch evidence from completed run |
-| `expcon verify <run>` | Verify evidence integrity |
-| `expcon adjudicate <run>` | Adjudicate execution/contract/scientific status |
-| `expcon artifacts <exp-or-run>` | List artifacts with provenance |
-| `expcon workspace <exp>` | Create tmux operations workspace |
-| `expcon attach <exp>` | Attach to existing tmux workspace |
-| `expcon colab doctor/specs/runtimes/inspect` | Operator tools for the official Colab Runtime API |
+| `expcon --version` | Prints installed Expcon version. |
+| `expcon init [--json]` | Creates `.expcon/config.toml`, `runs/`, `artifacts/`, `state/`, `experiments/`, and `.expcon/AGENTS.fragment.md` in the current repository. Existing `AGENTS.md` is never overwritten. |
+| `expcon init --name E01 --version v001 --title "…" [options]` | Creates an editable experiment contract. Options include `--backend`, `--hypothesis`, `--primary-metric`, repeatable `--required-output`, `--python`, `--reproducibility-level`, and `--seed`. |
+| `expcon doctor [--json]` | Reports core version, available tools, packaged skill, and detected project state. |
+| `expcon skill path` | Prints the canonical packaged `SKILL.md` location. |
+| `expcon skill status [--json]` | Reports bundled skill availability and a `$CODEX_HOME` installation when detectable. |
+| `expcon skill install [--target <skills-dir>] [--json]` | Copies the skill to an existing explicit agent-skill directory, or `$CODEX_HOME/skills` when configured. No unknown agent directory is guessed. |
 
-All commands support `--json` for machine-readable output.
+### Contract, identity, and bundle control
+
+| Command | What it does |
+|---|---|
+| `expcon inspect <experiment> [--json]` | Shows contract identity hashes, lifecycle state, frozen state, stages, outputs, and allowed backends. Run this first. |
+| `expcon validate <experiment> [--json]` | Validates schema, stage DAG, output declarations, acceptance-rule form, and mutable scientific aliases. |
+| `expcon freeze <experiment> [--json]` | Validates, calculates canonical identities, writes `contract.lock.json`, writes source manifest, and transitions to `FROZEN`. It never rewrites editable YAML. |
+| `expcon diff <experiment> [--json]` | Compares frozen scientific/source/config/runner state with the current tree. A detected divergence is non-zero and means create a successor version. |
+| `expcon bundle <experiment> [--json]` | Requires a clean frozen contract and creates the protected content-addressed bundle. |
+| `expcon verify-bundle <bundle> [--json]` | Verifies protected bundle file hashes, contract hash, extras, and bundle ID. |
+
+### Run lifecycle, evidence, and adjudication
+
+| Command | What it does |
+|---|---|
+| `expcon run <experiment> --backend local [--accelerator none] [--json]` | Verifies frozen state, clean diff, backend allowance, and bundle; then runs declared stages locally. |
+| `expcon run <experiment> --backend kaggle --kernel owner/slug [--accelerator none] [--json]` | Uses the hybrid Kaggle adapter. A remote run must resolve an exact kernel version before Expcon accepts its remote identity. |
+| `expcon run <experiment> --backend colab [--json]` | Uses the official allowlisted Colab Runtime API for provisioning/observation. It blocks rather than inventing a workload-execution channel. |
+| `expcon ps [--json]` | Lists persisted runs. |
+| `expcon status <run> [--json]` | Shows canonical Expcon state plus backend observation. |
+| `expcon events <run> [--json]` | Shows the append-only event ledger. |
+| `expcon events <run> --follow [--json]` | Tails new event-ledger entries. |
+| `expcon fetch <run> [--output-dir <dir>] [--json]` | Retrieves backend evidence, packages it, and advances to fetched evidence where valid. |
+| `expcon artifacts <run-or-experiment> [--json]` | Lists registered artifacts and provenance. |
+| `expcon verify <run> [--bundle <path>] [--json]` | Verifies evidence, artifacts, metrics, required outputs, contract, and bundle linkage. |
+| `expcon adjudicate <run> [--json]` | Separately reports execution, contract, evidence, and scientific verdict. A negative scientific verdict remains a valid execution. |
+| `expcon workspace <experiment> [--json]` | Creates an optional tmux operations workspace. |
+| `expcon attach <experiment> [--json]` | Returns attachment details for that tmux workspace. |
+
+### Kaggle operator commands
+
+| Command | What it does |
+|---|---|
+| `expcon kaggle doctor [--json]` | Reports Public API and official CLI availability/authentication separately, plus the transport designated for every capability. |
+| `expcon kaggle inspect <owner/slug> [--json]` | Inspects a kernel through the Public API. |
+| `expcon kaggle status <run> [--json]` | Gets API-preferred remote status for an Expcon Kaggle run; uses CLI only as an explicit operational fallback. |
+| `expcon kaggle dataset inspect <owner/slug> [--json]` | Reads dataset metadata through the Public API without downloading it. |
+| `expcon kaggle competition inspect <slug> [--json]` | Reads competition metadata through the Public API without scraping webpages. |
+
+The documented CLI output operation is latest-only. Expcon refuses it for an
+already version-bound remote run, returning `OUTPUT_VERSION_AMBIGUOUS` rather
+than associating output from a newer kernel version with old evidence.
+
+### Colab operator commands
+
+| Command | What it does |
+|---|---|
+| `expcon colab doctor [--json]` | Checks configured OAuth access and API/spec availability without emitting a token. |
+| `expcon colab specs [--json]` | Lists eligible Runtime API specs, including CPU/GPU/TPU shape information returned by Colab. |
+| `expcon colab runtimes [--json]` | Lists the caller’s API-managed runtimes. |
+| `expcon colab inspect <runtime> [--json]` | Gets a runtime observation with `ConnectionInfo` redacted. |
 
 ### Colab runtime backend
 
@@ -204,6 +248,35 @@ colab` provisions only when frozen requirements are met, then deterministically
 marks the run `BLOCKED` rather than inventing an execution channel. An approved
 artifact transport/execution integration can be added later without changing
 the scientific contract.
+
+### Hybrid Kaggle backend
+
+```
+                    EXPCON
+                       |
+                 KaggleBackend
+                  /         \\
+           Public API       CLI
+          structured read  dispatch/fallback
+                  \         /
+                    KAGGLE
+```
+
+Expcon uses the installed official Kaggle Public API for structured kernel,
+dataset, competition, and status reads, while retaining the official CLI for
+kernel pushes and operational transport. `expcon kaggle doctor --json` reports
+the selected transport for each capability.
+
+Kaggle's configured OAuth/API-token mechanism remains the only credential
+store. Expcon does not print or persist credentials. API reads use bounded
+exponential retry for HTTP 429 and distinguish an authenticated permission
+failure from authentication failure.
+
+After a push, Expcon must resolve an API-reported exact kernel version before
+it treats the remote execution as bound to a run. The documented CLI output
+command retrieves latest output only; it is therefore refused for an older
+version-bound run rather than silently attaching newer output. This fail-closed
+rule protects kernel-version and artifact provenance.
 
 ## Build and verify a release
 

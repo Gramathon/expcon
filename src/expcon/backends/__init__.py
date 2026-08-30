@@ -1,5 +1,5 @@
-"""Optional execution-provider adapters."""
+"""Optional execution-provider adapters.
 
-from expcon.backends.colab import ColabBackend, ColabClientError
-
-__all__ = ["ColabBackend", "ColabClientError"]
+Adapters are intentionally not imported here: both Colab and Kaggle implement
+the shared runner protocol, so eager imports would form a cycle.
+"""

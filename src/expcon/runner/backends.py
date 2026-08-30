@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from expcon.util.env import redact_secrets
+from expcon.backends.kaggle import KaggleApiTransport, KaggleCliTransport, KaggleTransportError
 
 
 class BackendError(Exception):
@@ -280,9 +281,12 @@ class KaggleBackend(ExecutionBackend):
 
     name = "kaggle"
 
-    def __init__(self, workspace_root: Path | str):
+    def __init__(self, workspace_root: Path | str, api: KaggleApiTransport | None = None,
+                 cli: KaggleCliTransport | None = None):
         self.workspace_root = Path(workspace_root).resolve()
         self.kaggle_bin = os.environ.get("KAGGLE_BIN", "kaggle")
+        self.api = api or KaggleApiTransport()
+        self.cli = cli or KaggleCliTransport(self.kaggle_bin)
 
     def submit(self, bundle: Path, context: RunContext) -> str:
         import uuid
@@ -309,8 +313,11 @@ class KaggleBackend(ExecutionBackend):
                 shutil.copy2(item, kaggle_work / item.name)
 
         # Write kernel metadata
+        kernel_ref = context.kernel or f"{os.environ.get('KAGGLE_USERNAME', 'user')}/{run_id}"
+        if not _valid_kaggle_ref(kernel_ref):
+            raise BackendError("Invalid Kaggle kernel ref; expected owner/slug")
         kernel_metadata = {
-            "id": f"{os.environ.get('KAGGLE_USERNAME', 'user')}/{run_id}",
+            "id": kernel_ref,
             "title": run_id,
             "code_file": "runner/kernel.py",
             "language": "python",
@@ -321,6 +328,8 @@ class KaggleBackend(ExecutionBackend):
             "enable_internet": False,
             "dataset_sources": context.environment.get("dataset_sources", []),
             "competition_sources": context.environment.get("competition_sources", []),
+            "kernel_sources": context.environment.get("kernel_sources", []),
+            "model_sources": context.environment.get("model_sources", []),
         }
         (kaggle_work / "kernel-metadata.json").write_text(
             json.dumps(kernel_metadata, indent=2) + "\n", encoding="utf-8"
@@ -334,24 +343,17 @@ class KaggleBackend(ExecutionBackend):
         )
 
         # Submit via Kaggle CLI (if available)
-        kaggle_available = shutil.which(self.kaggle_bin) is not None
+        kaggle_available = bool(self.cli.capabilities()["installed"])
         if kaggle_available:
             try:
-                result = subprocess.run(
-                    [self.kaggle_bin, "kernels", "push", "-p", str(kaggle_work)],
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                    env=self._clean_env(),
-                )
-                if result.returncode == 0:
-                    (run_dir / "kaggle_submitted").write_text("true", encoding="utf-8")
-                else:
-                    # Don't fail - mark as submitted but note the error
-                    (run_dir / "kaggle_submitted").write_text("false", encoding="utf-8")
-                    (run_dir / "kaggle_error.txt").write_text(result.stderr, encoding="utf-8")
+                self.cli.push_kernel(kaggle_work)
+                (run_dir / "kaggle_submitted").write_text("true", encoding="utf-8")
+                remote = self._resolve_remote_identity(kernel_ref, context, kernel_metadata)
+                (run_dir / "kaggle.json").write_text(json.dumps(remote, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             except Exception as exc:
+                (run_dir / "kaggle_submitted").write_text("false", encoding="utf-8")
                 (run_dir / "kaggle_error.txt").write_text(str(exc), encoding="utf-8")
+                raise
         else:
             # Kaggle CLI not available - simulate for testing
             (run_dir / "kaggle_submitted").write_text("simulated", encoding="utf-8")
@@ -359,6 +361,25 @@ class KaggleBackend(ExecutionBackend):
         (run_dir / "status.txt").write_text("running", encoding="utf-8")
 
         return run_id
+
+    def _resolve_remote_identity(self, kernel_ref: str, context: RunContext, metadata: dict[str, Any]) -> dict[str, Any]:
+        """Bind this run to an exact API-reported kernel version or fail closed."""
+        observed = self.api.inspect_kernel(kernel_ref)
+        version = next((observed.get(key) for key in ("versionNumber", "version", "kernelVersionNumber") if observed.get(key) is not None), None)
+        if version is None:
+            raise BackendError("REMOTE_IDENTITY_UNRESOLVED: Kaggle did not expose an exact kernel version")
+        owner, slug = kernel_ref.split("/", 1)
+        return redact_secrets({
+            "backend": "kaggle", "identity_source": "public_api",
+            "contract_sha256": context.contract_hash, "bundle_sha256": context.bundle_id,
+            "remote": {"kernel": {"owner": owner, "slug": slug, "ref": kernel_ref,
+                                     "id": observed.get("id", observed.get("kernelId")), "version": version},
+                       "session": {"id": observed.get("sessionId"), "status": observed.get("status")},
+                       "runtime": {"machine_shape": observed.get("machineType", metadata.get("machine_type")),
+                                   "enable_gpu": metadata["enable_gpu"], "enable_tpu": metadata["enable_tpu"],
+                                   "enable_internet": metadata["enable_internet"]},
+                       "sources": {"datasets": metadata["dataset_sources"], "competitions": metadata["competition_sources"],
+                                   "kernels": metadata["kernel_sources"], "models": metadata["model_sources"]}}})
 
     def _generate_kernel_script(self, context: RunContext) -> str:
         return f'''#!/usr/bin/env python3
@@ -413,22 +434,19 @@ print(json.dumps(results, indent=2))
 
         status = status_file.read_text(encoding="utf-8").strip()
 
-        # Check if Kaggle CLI is available and poll
-        kaggle_available = shutil.which(self.kaggle_bin) is not None
-        if kaggle_available and status == "running":
+        remote_record = run_dir / "kaggle.json"
+        if remote_record.exists():
+            remote = json.loads(remote_record.read_text(encoding="utf-8"))
+            ref = remote["remote"]["kernel"]["ref"]
             try:
-                result = subprocess.run(
-                    [self.kaggle_bin, "kernels", "status", run_id],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    env=self._clean_env(),
-                )
-                output = result.stdout + result.stderr
-                if "complete" in output.lower():
-                    status = "completed"
-                elif "error" in output.lower() or "failed" in output.lower():
-                    status = "failed"
+                observed = self.api.kernel_status(ref)
+                status = str(observed.get("status", observed.get("state", status))).lower()
+            except KaggleTransportError:
+                # Explicit fallback: the remote identity stays API-bound, but
+                # current operational status may come from the official CLI.
+                output = self.cli.kernel_status(ref).lower()
+                if "complete" in output: status = "completed"
+                elif "error" in output or "failed" in output: status = "failed"
             except Exception:
                 pass
 
@@ -447,19 +465,11 @@ print(json.dumps(results, indent=2))
         evidence_dir = dest / "evidence"
         evidence_dir.mkdir(parents=True, exist_ok=True)
 
-        # Try to download from Kaggle if CLI is available
-        kaggle_available = shutil.which(self.kaggle_bin) is not None
-        if kaggle_available:
-            try:
-                subprocess.run(
-                    [self.kaggle_bin, "kernels", "output", run_id, "-p", str(evidence_dir)],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                    env=self._clean_env(),
-                )
-            except Exception:
-                pass
+        remote_record = run_dir / "kaggle.json"
+        if remote_record.exists():
+            # The CLI's documented output command fetches *latest* output;
+            # it cannot prove an older bound version, so refuse it here.
+            raise BackendError("OUTPUT_VERSION_AMBIGUOUS: CLI output fetch is latest-only for an API-bound kernel version")
 
         # Copy any local results
         kaggle_work = run_dir / "kaggle_work"
@@ -501,3 +511,8 @@ print(json.dumps(results, indent=2))
             if any(p.search(key) for p in secret_keys):
                 env.pop(key, None)
         return env
+
+
+def _valid_kaggle_ref(value: str) -> bool:
+    import re
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,62}/[A-Za-z0-9][A-Za-z0-9_-]{0,62}", value))

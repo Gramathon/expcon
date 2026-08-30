@@ -16,6 +16,11 @@ from expcon.runner.backends import (
 from expcon.runner.runner import StageRunner
 
 
+class _FakeKaggleCli:
+    def capabilities(self):
+        return {"installed": False}
+
+
 class TestBackendInterface:
     def test_abstract_backend(self):
         backend = ExecutionBackend()
@@ -62,13 +67,13 @@ class TestLocalBackend:
 
 class TestKaggleBackend:
     def test_kaggle_backend_submit_simulated(self, tmp_path):
-        backend = KaggleBackend(tmp_path)
+        backend = KaggleBackend(tmp_path, cli=_FakeKaggleCli())
         context = RunContext(
             experiment_id="E00",
             version="v001",
             bundle_id="bundle123",
             contract_hash="hash123",
-            kernel="smoke",
+            kernel="owner/smoke",
             accelerator="none",
         )
         bundle_dir = tmp_path / "bundle"

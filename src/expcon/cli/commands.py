@@ -19,8 +19,9 @@ from expcon.lifecycle.experiment_state import ExperimentLifecycle
 from expcon.lifecycle.state import ExperimentState
 from expcon.bundle.bundle import BundleBuilder, BundleVerifier
 from expcon.runner.runner import StageRunner, RunContext
-from expcon.runner.backends import LocalBackend, KaggleBackend
+from expcon.runner.backends import LocalBackend, KaggleBackend, _valid_kaggle_ref
 from expcon.backends.colab import ColabApiClient, ColabBackend, ColabClientError
+from expcon.backends.kaggle import KaggleApiTransport, KaggleCliTransport, KaggleTransportError
 from expcon.evidence.evidence import EvidenceVerifier
 from expcon.adjudication.adjudication import Adjudicator
 from expcon.workspace.workspace import WorkspaceManager
@@ -220,6 +221,79 @@ def colab_runtimes_cmd(as_json):
 @click.option("--json", "as_json", is_flag=True)
 def colab_inspect_cmd(runtime, as_json):
     _output(ColabApiClient().runtime(runtime), as_json)
+
+
+@click.group(name="kaggle")
+def kaggle_cmd():
+    """Operator tools for the hybrid Kaggle Public API and CLI adapter."""
+
+
+@kaggle_cmd.command(name="doctor")
+@click.option("--json", "as_json", is_flag=True)
+def kaggle_doctor_cmd(as_json):
+    api, cli = KaggleApiTransport(), KaggleCliTransport()
+    api_caps, cli_caps = api.capabilities(), cli.capabilities()
+    result: dict[str, Any] = {"cli": cli_caps, "public_api": api_caps,
+                              "capabilities": {"kernel.inspect": "api", "kernel.push": "cli",
+                                               "kernel.status": "api (cli fallback)", "output.fetch": "cli latest-only (not version-safe)",
+                                               "dataset.inspect": "api", "competition.inspect": "api"}}
+    if api.available:
+        try:
+            api.authenticate()
+            result["public_api"]["authentication"] = "PASS"
+        except KaggleTransportError as exc:
+            result["public_api"]["authentication"] = str(exc)
+    result["status"] = "READY" if cli_caps["installed"] and api.available else "PARTIAL"
+    _output(result, as_json)
+
+
+@kaggle_cmd.command(name="inspect")
+@click.argument("kernel")
+@click.option("--json", "as_json", is_flag=True)
+def kaggle_inspect_cmd(kernel, as_json):
+    if not _valid_kaggle_ref(kernel):
+        raise click.ClickException("Invalid kernel ref; expected owner/slug")
+    _output(KaggleApiTransport().inspect_kernel(kernel), as_json)
+
+
+@kaggle_cmd.command(name="status")
+@click.argument("run_id")
+@click.option("--json", "as_json", is_flag=True)
+def kaggle_status_cmd(run_id, as_json):
+    root = find_workspace_root()
+    run = ExperimentLifecycle(root).load_run(run_id)
+    if run.backend != "kaggle":
+        raise click.ClickException(f"Run {run_id} does not use the Kaggle backend")
+    status = KaggleBackend(root).status(run_id)
+    _output({"run_id": run_id, "remote_status": status.state, "details": status.details}, as_json)
+
+
+@kaggle_cmd.group(name="dataset")
+def kaggle_dataset_cmd():
+    """Inspect datasets through the official Public API."""
+
+
+@kaggle_dataset_cmd.command(name="inspect")
+@click.argument("dataset")
+@click.option("--json", "as_json", is_flag=True)
+def kaggle_dataset_inspect_cmd(dataset, as_json):
+    if not _valid_kaggle_ref(dataset):
+        raise click.ClickException("Invalid dataset ref; expected owner/slug")
+    _output(KaggleApiTransport().inspect_dataset(dataset), as_json)
+
+
+@kaggle_cmd.group(name="competition")
+def kaggle_competition_cmd():
+    """Inspect competition metadata through the official Public API."""
+
+
+@kaggle_competition_cmd.command(name="inspect")
+@click.argument("competition")
+@click.option("--json", "as_json", is_flag=True)
+def kaggle_competition_inspect_cmd(competition, as_json):
+    if not competition.replace("-", "").replace("_", "").isalnum():
+        raise click.ClickException("Invalid competition ref")
+    _output(KaggleApiTransport().competition_info(competition), as_json)
 
 
 @click.group(name="skill")
