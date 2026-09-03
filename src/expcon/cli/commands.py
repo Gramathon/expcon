@@ -18,6 +18,7 @@ from expcon.contract.canonical import contract_identity
 from expcon.lifecycle.experiment_state import ExperimentLifecycle
 from expcon.bundle.bundle import BundleBuilder, BundleVerifier, verify_frozen_bundle_compatibility
 from expcon.runner.runner import StageRunner, RunContext
+from expcon.runner.environment import EnvironmentError, preflight_local_environment
 from expcon.runner.backends import LocalBackend, KaggleBackend, _valid_kaggle_ref
 from expcon.backends.colab import ColabApiClient, ColabBackend, ColabClientError
 from expcon.backends.kaggle import KaggleApiTransport, KaggleCliTransport, KaggleTransportError
@@ -724,6 +725,16 @@ def run_cmd(experiment, backend, kernel, accelerator, input_bindings, environmen
         }, as_json)
         sys.exit(1)
 
+    environment_attestation = {}
+    interpreter = None
+    if backend == "local":
+        try:
+            environment_attestation = preflight_local_environment(bundle_dir, workspace_root)
+            interpreter = environment_attestation["python_executable"]
+        except EnvironmentError as exc:
+            _output({"status": "ERROR", "error": f"Local environment preflight failed: {exc}"}, as_json)
+            sys.exit(1)
+
     run = lifecycle.create_run(
         experiment_id=contract.experiment_id,
         version=contract.version,
@@ -732,7 +743,7 @@ def run_cmd(experiment, backend, kernel, accelerator, input_bindings, environmen
         bundle_id=materialized_bundle_id,
         kernel=kernel,
         accelerator=accelerator,
-        metadata={"bundle_compatibility": bundle_compatibility},
+        metadata={"bundle_compatibility": bundle_compatibility, "environment": environment_attestation},
     )
 
     # Select backend
@@ -760,6 +771,8 @@ def run_cmd(experiment, backend, kernel, accelerator, input_bindings, environmen
         environment={"requirements": contract.get("execution", "requirements", default={})},
         input_bindings=_parse_named_bindings(input_bindings, "input"),
         environment_bindings=_parse_named_bindings(environment_bindings, "environment"),
+        interpreter=interpreter,
+        environment_attestation=environment_attestation,
     )
 
     # Transition states through the state machine

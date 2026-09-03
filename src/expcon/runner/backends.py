@@ -210,7 +210,11 @@ class LocalBackend(ExecutionBackend):
         except InvocationError as exc:
             return StageResult(stage_id=stage_id, success=False, output="", error=f"Invocation resolution failed: {exc}")
         (stage_output_dir / "invocation.json").write_text(
-            json.dumps(invocation.attestation, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            json.dumps({
+                **invocation.attestation,
+                "runtime_environment": getattr(context, "environment_attestation", {}),
+                "python_executable": getattr(context, "interpreter", None) or sys.executable,
+            }, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
 
         try:
@@ -220,7 +224,7 @@ class LocalBackend(ExecutionBackend):
                 # Always prefer the immutable bundled closure to the host checkout.
                 runtime_environment["PYTHONPATH"] = str(source_root)
             result = subprocess.run(
-                [sys.executable, str(script_path), *invocation.argv],
+                [getattr(context, "interpreter", None) or sys.executable, str(script_path), *invocation.argv],
                 capture_output=True,
                 text=True,
                 cwd=str(bundle_path),

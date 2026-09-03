@@ -59,6 +59,8 @@ class RunContext:
     extra_args: list[str] = field(default_factory=list)
     input_bindings: dict[str, str] = field(default_factory=dict)
     environment_bindings: dict[str, str] = field(default_factory=dict)
+    interpreter: Optional[str] = None
+    environment_attestation: dict[str, Any] = field(default_factory=dict)
 
 
 class StageRunner:

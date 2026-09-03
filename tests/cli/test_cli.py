@@ -113,16 +113,15 @@ class TestCLI:
         data = json.loads(result.output)
         assert data["status"] == "PASS"
 
-    def test_run_local(self, minimal_project):
+    def test_run_local_refuses_unprovisioned_frozen_environment(self, minimal_project):
         tmp_path, exp_dir = minimal_project
         runner = CliRunner()
         runner.invoke(main, ["freeze", str(exp_dir / "EXPERIMENT.yaml"), "--json"])
         runner.invoke(main, ["bundle", str(exp_dir / "EXPERIMENT.yaml"), "--json"])
         result = runner.invoke(main, ["run", str(exp_dir / "EXPERIMENT.yaml"), "--backend", "local", "--json"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         data = json.loads(result.output)
-        assert data["status"] == "SUBMITTED"
-        assert data["backend"] == "local"
+        assert "environment preflight failed" in data["error"].lower()
 
     def test_run_not_frozen(self, minimal_project):
         tmp_path, exp_dir = minimal_project
