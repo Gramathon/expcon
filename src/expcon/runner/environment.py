@@ -19,9 +19,6 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
 from pathlib import Path
 from typing import Any
 
-from packaging.specifiers import SpecifierSet
-from packaging.version import Version
-
 from expcon.hashing.canonical import canonical_bytes
 from expcon.hashing.digest import file_sha256, sha256_bytes
 
@@ -31,6 +28,46 @@ class EnvironmentError(RuntimeError):
 
 
 _STDLIB = set(getattr(sys, "stdlib_module_names", ()))
+
+
+def _python_version_tuple(value: str) -> tuple[int, ...]:
+    """Parse a concrete Python version without adding a launcher dependency."""
+    parts = value.split(".")
+    if not parts or any(not part.isdigit() for part in parts):
+        raise EnvironmentError(f"Unsupported Python version: {value!r}")
+    return tuple(int(part) for part in parts)
+
+
+def _python_requirement_satisfied(version: str, requirement: str) -> bool:
+    """Conservatively evaluate the simple PEP 440 comparisons uv records.
+
+    A preflight must fail closed rather than importing a third-party resolver
+    from the Expcon launcher environment.  Unsupported constructs are rejected
+    explicitly; the frozen lock remains the authority for dependency versions.
+    """
+    observed = _python_version_tuple(version)
+    comparisons = ("<=", ">=", "==", "!=", "<", ">")
+    for clause in (item.strip() for item in requirement.split(",")):
+        operator = next((item for item in comparisons if clause.startswith(item)), None)
+        if operator is None:
+            raise EnvironmentError(f"Unsupported Python requirement clause: {clause!r}")
+        target_text = clause[len(operator):].strip()
+        if "*" in target_text:
+            raise EnvironmentError(f"Unsupported Python requirement clause: {clause!r}")
+        target = _python_version_tuple(target_text)
+        if operator == "<=" and not observed <= target:
+            return False
+        if operator == ">=" and not observed >= target:
+            return False
+        if operator == "==" and not observed == target:
+            return False
+        if operator == "!=" and not observed != target:
+            return False
+        if operator == "<" and not observed < target:
+            return False
+        if operator == ">" and not observed > target:
+            return False
+    return True
 
 
 def _lock_spec(contract: dict[str, Any]) -> tuple[str, str | None]:
@@ -122,8 +159,7 @@ def preflight_local_environment(bundle_path: Path | str, workspace_root: Path | 
     if result.returncode != 0:
         raise EnvironmentError(f"Frozen runner dependencies are not importable: {result.stderr.strip()}")
     runtime = json.loads(result.stdout)
-    python_version = Version(runtime["python_version"])
-    if requires_python and python_version not in SpecifierSet(requires_python):
+    if requires_python and not _python_requirement_satisfied(runtime["python_version"], requires_python):
         raise EnvironmentError(f"Interpreter Python {runtime['python_version']} does not satisfy {requires_python}")
     if runtime["distributions"] != distributions:
         raise EnvironmentError("Installed direct dependency versions differ from frozen lock")
