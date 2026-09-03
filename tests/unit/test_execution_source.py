@@ -7,11 +7,16 @@ import subprocess
 import pytest
 import yaml
 
-from expcon.bundle.bundle import BundleBuilder
+from expcon.bundle.bundle import (
+    BUNDLE_IDENTITY_ALGORITHM_V2,
+    BundleBuilder,
+    compute_bundle_identity,
+    verify_frozen_bundle_compatibility,
+)
 from expcon.bundle.source import SourceResolutionError, resolve_source_closure
 from expcon.contract.contract import load_contract
 from expcon.contract.canonical import compute_execution_identity_hash_v2, compute_scientific_design_hash_v2
-from expcon.contract.operations import freeze_experiment
+from expcon.contract.operations import diff_experiment, freeze_experiment
 
 
 def _contract(root: Path, include: list[str]) -> dict:
@@ -107,3 +112,43 @@ def test_frozen_bundle_copies_exact_declared_source_bytes(tmp_path):
         text=True, capture_output=True, check=True,
     )
     assert result.stdout.strip() == "1"
+
+
+def test_freeze_preflight_and_materialization_share_v2_content_identity(tmp_path):
+    exp, _ = _experiment(tmp_path)
+    freeze = freeze_experiment(exp, tmp_path)
+    preflight = BundleBuilder(exp).preflight()
+    bundle, materialized = BundleBuilder(exp).build()
+    manifest = __import__("json").loads((bundle / "bundle_manifest.json").read_text(encoding="utf-8"))
+    assert freeze["bundle_id"] == preflight["bundle_id"] == materialized
+    assert manifest["bundle_identity_algorithm"] == BUNDLE_IDENTITY_ALGORITHM_V2
+    assert manifest["bundle_id"] == materialized
+
+
+def test_v2_diff_surfaces_execution_source_content_change(tmp_path):
+    exp, _ = _experiment(tmp_path)
+    freeze_experiment(exp, tmp_path)
+    (tmp_path / "src/pkg/sub/helper.py").write_text("VALUE = 2\n", encoding="utf-8")
+    diff = diff_experiment(exp)
+    assert diff["divergence_detected"]
+    assert any(item["field"] == "bundle_content" for item in diff["divergences"])
+
+
+def test_legacy_lock_can_only_use_explicit_complete_compatibility(tmp_path):
+    exp, contract = _experiment(tmp_path)
+    contract["execution"]["source"]["expected_sha256"] = resolve_source_closure(
+        exp, load_contract(exp / "EXPERIMENT.yaml")
+    ).sha256
+    contract["execution"]["invocation"] = {"argv": ["--output", "${outputs.root}"]}
+    (exp / "EXPERIMENT.yaml").write_text(yaml.safe_dump(contract), encoding="utf-8")
+    freeze_experiment(exp, tmp_path)
+    lock_path = exp / "contract.lock.json"
+    lock = __import__("json").loads(lock_path.read_text(encoding="utf-8"))
+    legacy = compute_bundle_identity(exp, load_contract(exp / "EXPERIMENT.yaml"), algorithm="expcon-bundle-v1")
+    lock["identity"].pop("bundle_identity_algorithm")
+    lock["identity"]["bundle_id"] = legacy.bundle_id
+    lock["locks"]["source"] = legacy.source_hash
+    lock_path.write_text(__import__("json").dumps(lock), encoding="utf-8")
+    compatibility = verify_frozen_bundle_compatibility(exp, load_contract(exp / "EXPERIMENT.yaml"), lock)
+    assert compatibility["status"] == "PASS", compatibility
+    assert compatibility["frozen_bundle_id"] != compatibility["materialized_bundle_id"]

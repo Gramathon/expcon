@@ -214,6 +214,12 @@ def source_manifest(experiment_dir: Path, contract: ExperimentContract) -> Direc
     """Compute generic repository source provenance and guarantee stage entries."""
     root = repository_root(experiment_dir, contract)
     manifest = compute_directory_manifest(root, skip_hidden=True, include=["src/", "scripts/", "configs/"])
+    # Bytecode caches are host-runtime byproducts, never declared repository
+    # source.  Keeping them out avoids transport-dependent source provenance.
+    manifest.entries = [
+        entry for entry in manifest.entries
+        if "__pycache__" not in Path(entry.relative_path).parts and not entry.relative_path.endswith(".pyc")
+    ]
     known = {entry.relative_path for entry in manifest.entries}
     for entrypoint in resolve_entrypoints(experiment_dir, contract):
         relative = str(entrypoint.source_path.relative_to(root))
@@ -224,3 +230,42 @@ def source_manifest(experiment_dir: Path, contract: ExperimentContract) -> Direc
             known.add(relative)
     manifest.entries.sort(key=lambda item: item.relative_path)
     return manifest
+
+
+def legacy_source_manifest(experiment_dir: Path, contract: ExperimentContract) -> DirectoryManifest:
+    """Reproduce pre-v2 repository source discovery for historical locks.
+
+    This intentionally retains every regular file the historical discovery
+    algorithm included, including bytecode caches.  It exists only to verify
+    old frozen identities; new v2 identities use :func:`source_manifest`.
+    """
+    root = repository_root(experiment_dir, contract)
+    manifest = compute_directory_manifest(root, skip_hidden=True, include=["src/", "scripts/", "configs/"])
+    known = {entry.relative_path for entry in manifest.entries}
+    for entrypoint in resolve_entrypoints(experiment_dir, contract):
+        relative = str(entrypoint.source_path.relative_to(root))
+        if relative not in known:
+            manifest.entries.append(
+                ManifestEntry(relative, entrypoint.source_path.stat().st_size, entrypoint.sha256)
+            )
+    manifest.entries.sort(key=lambda item: item.relative_path)
+    return manifest
+
+
+def canonical_source_manifest(manifest: DirectoryManifest) -> dict:
+    """Return transport-independent repository-source provenance.
+
+    ``DirectoryManifest.to_dict()`` retains an absolute root for diagnostics.
+    That root must not participate in a bundle-content identity because it is a
+    host transport detail rather than executable content.
+    """
+    return {
+        "entries": [
+            {
+                "relative_path": entry.relative_path,
+                "size_bytes": entry.size_bytes,
+                "sha256": entry.sha256,
+            }
+            for entry in sorted(manifest.entries, key=lambda item: item.relative_path)
+        ]
+    }

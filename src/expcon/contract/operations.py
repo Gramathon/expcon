@@ -24,7 +24,13 @@ from expcon.lifecycle.state import ExperimentState
 from expcon.lifecycle.experiment_state import ExperimentLifecycle
 from expcon.hashing.manifest import compute_directory_manifest
 from expcon.util.path import find_workspace_root
-from expcon.bundle.source import SourceResolutionError, resolve_entrypoints, resolve_source_closure, source_manifest
+from expcon.bundle.source import (
+    SourceResolutionError,
+    legacy_source_manifest,
+    resolve_entrypoints,
+    resolve_source_closure,
+    source_manifest,
+)
 from expcon.runner.invocation import InvocationError, validate_invocation_spec
 
 
@@ -138,6 +144,20 @@ def _has_stage_cycle(stages: list[Any]) -> bool:
     return any(visit(node) for node in graph)
 
 
+def _config_hashes(experiment_dir: Path, contract: ExperimentContract) -> dict[str, str]:
+    """Return deterministic hashes for declared execution configuration files."""
+    configs = contract.get("execution", "configs", default=[])
+    if not configs:
+        configs_dir = experiment_dir / "configs"
+        if configs_dir.exists():
+            configs = [str(path.relative_to(experiment_dir)) for path in configs_dir.iterdir() if path.is_file()]
+    return {
+        str(config): file_sha256(experiment_dir / str(config))
+        for config in sorted(configs)
+        if (experiment_dir / str(config)).is_file()
+    }
+
+
 def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | None = None) -> dict[str, Any]:
     """Freeze an experiment: validate, resolve references, compute identities, write lock file.
 
@@ -170,57 +190,23 @@ def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | N
     scientific_hash = compute_scientific_hash(contract_data)
     execution_hash = compute_execution_hash(contract_data)
 
-    # Step 4: Compute source hash from the declared repository source tree.
-    # Declared stage entrypoints are included even when they live outside the
-    # experiment directory.
+    # Step 4: Compute the versioned, transport-independent executable bundle
+    # identity using the exact same implementation as preflight/materialize.
+    from expcon.bundle.bundle import BUNDLE_IDENTITY_ALGORITHM_V2, compute_bundle_identity
+
+    bundle_identity = compute_bundle_identity(
+        experiment_dir, contract, algorithm=BUNDLE_IDENTITY_ALGORITHM_V2
+    )
     discovered_source_manifest = source_manifest(experiment_dir, contract)
-    source_hash = sha256_bytes(canonical_bytes(discovered_source_manifest.to_dict()))
-
-    # Step 5: Compute dependency hash
-    dep_lock = contract.get("environment", "dependency_lock", default="uv.lock")
-    dep_path = experiment_dir.parent / str(dep_lock)
-    dependency_hash = file_sha256(dep_path) if dep_path.exists() else sha256_bytes(canonical_bytes({"missing": str(dep_lock)}))
-
-    # Step 6: Compute dataset hashes
-    dataset_hashes = {}
-    datasets = contract.get("data", "datasets", default=[])
-    if datasets:
-        for ds in datasets:
-            if isinstance(ds, dict) and "path" in ds:
-                ds_path = experiment_dir / str(ds["path"])
-                if ds_path.exists():
-                    dataset_hashes[str(ds["path"])] = file_sha256(ds_path)
-
-    # Step 7: Compute runner hash
-    runner_entries = [
-        {"entrypoint": entry.declared_path, "sha256": entry.sha256}
-        for entry in resolve_entrypoints(experiment_dir, contract)
+    source_hash = bundle_identity.source_hash
+    dependency_hash = bundle_identity.dependency_hash
+    dataset_hashes = bundle_identity.dataset_hashes
+    runner_hash = bundle_identity.runner_hash
+    bundle_id = bundle_identity.bundle_id
+    config_entries = [
+        {"path": path, "sha256": sha}
+        for path, sha in sorted(_config_hashes(experiment_dir, contract).items())
     ]
-    runner_hash = sha256_bytes(canonical_bytes(runner_entries))
-
-    # Step 8: Compute config hash
-    config_entries = []
-    configs_dir = experiment_dir / "configs"
-    if configs_dir.exists():
-        for f in configs_dir.iterdir():
-            if f.is_file():
-                config_entries.append({"path": str(f.relative_to(experiment_dir)), "sha256": file_sha256(f)})
-    config_hash = sha256_bytes(canonical_bytes(config_entries))
-
-    # Step 9: Compute bundle_id
-    bundle_manifest_dict = {
-        "contract_hash": contract_hash,
-        "scientific_hash": scientific_hash,
-        "execution_hash": execution_hash,
-        "source_hash": source_hash,
-        "dependency_hash": dependency_hash,
-        "dataset_hashes": dataset_hashes,
-        "runner_hash": runner_hash,
-        "config_hash": config_hash,
-    }
-    from expcon.bundle.bundle import bundle_id_for
-
-    bundle_id = bundle_id_for(bundle_manifest_dict)
 
     # Step 10: Write contract.lock.json
     frozen_fields = _extract_frozen_fields(contract)
@@ -235,6 +221,7 @@ def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | N
             "version": contract.version,
             "contract_hash": contract_hash,
             "bundle_id": bundle_id,
+            "bundle_identity_algorithm": bundle_identity.algorithm,
         },
         "scientific_parameters_hash": scientific_hash,
         "locks": {
@@ -248,6 +235,7 @@ def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | N
         "scientific_parameters_snapshot": extract_scientific_parameters(contract_data),
         "hashes": {
             "execution_hash": execution_hash,
+            "execution_source_hash": bundle_identity.content["execution_source_closure_sha256"],
         },
     }
 
@@ -341,14 +329,39 @@ def diff_experiment(experiment_dir: Path | str) -> dict[str, Any]:
             "message": "Execution invocation or environment has changed since freeze",
         })
 
-    # Check source hash
-    if lock.get("locks", {}).get("source"):
-        current_source_manifest = source_manifest(experiment_dir, current_contract)
+    # Check the bundle-content identity with the algorithm declared in the
+    # lock.  Historical locks retain their v1 source-only semantics; modern
+    # locks use the full v2 executable closure.
+    bundle_algorithm = lock.get("identity", {}).get("bundle_identity_algorithm")
+    if bundle_algorithm:
+        from expcon.bundle.bundle import compute_bundle_identity
+
+        try:
+            current_bundle = compute_bundle_identity(
+                experiment_dir, current_contract, algorithm=bundle_algorithm
+            )
+            if current_bundle.bundle_id != lock.get("identity", {}).get("bundle_id"):
+                divergences.append({
+                    "field": "bundle_content",
+                    "algorithm": bundle_algorithm,
+                    "frozen_bundle_id": lock.get("identity", {}).get("bundle_id"),
+                    "current_bundle_id": current_bundle.bundle_id,
+                    "message": "Executable bundle content has changed since freeze",
+                })
+        except Exception as exc:
+            divergences.append({
+                "field": "bundle_content",
+                "algorithm": bundle_algorithm,
+                "message": f"Unable to recompute frozen bundle identity: {exc}",
+            })
+    elif lock.get("locks", {}).get("source"):
+        # v1 compatibility: reproduce the historical source-only comparison.
+        current_source_manifest = legacy_source_manifest(experiment_dir, current_contract)
         current_source_hash = sha256_bytes(canonical_bytes(current_source_manifest.to_dict()))
-        legacy_source_manifest = compute_directory_manifest(
+        experiment_scoped_legacy_manifest = compute_directory_manifest(
             experiment_dir, skip_hidden=True, include=["src/", "scripts/", "configs/"]
         )
-        legacy_source_hash = sha256_bytes(canonical_bytes(legacy_source_manifest.to_dict()))
+        legacy_source_hash = sha256_bytes(canonical_bytes(experiment_scoped_legacy_manifest.to_dict()))
         # Pre-0.1.0 freezes scoped source discovery to experiment_dir. Preserve
         # their frozen identity while allowing the repaired bundler to package a
         # declared repository-level entrypoint.

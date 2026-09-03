@@ -161,6 +161,7 @@ class ExperimentLifecycle:
         bundle_id: str = "",
         kernel: Optional[str] = None,
         accelerator: str = "none",
+        metadata: Optional[dict[str, Any]] = None,
     ) -> RunRecord:
         """Create a new run record."""
         run_id = f"run-{experiment_id}-{uuid.uuid4().hex[:8]}"
@@ -177,6 +178,7 @@ class ExperimentLifecycle:
             bundle_id=bundle_id,
             kernel=kernel,
             accelerator=accelerator,
+            metadata=metadata or {},
         )
         self._save_run(run)
         ledger = EventLedger(self.run_dir(run_id))

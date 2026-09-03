@@ -16,7 +16,7 @@ from expcon.contract.contract import load_contract
 from expcon.contract.operations import validate_experiment, freeze_experiment, diff_experiment
 from expcon.contract.canonical import contract_identity
 from expcon.lifecycle.experiment_state import ExperimentLifecycle
-from expcon.bundle.bundle import BundleBuilder, BundleVerifier
+from expcon.bundle.bundle import BundleBuilder, BundleVerifier, verify_frozen_bundle_compatibility
 from expcon.runner.runner import StageRunner, RunContext
 from expcon.runner.backends import LocalBackend, KaggleBackend, _valid_kaggle_ref
 from expcon.backends.colab import ColabApiClient, ColabBackend, ColabClientError
@@ -711,15 +711,28 @@ def run_cmd(experiment, backend, kernel, accelerator, input_bindings, environmen
     if bundle_check["status"] != "PASS":
         _output({"status": "ERROR", "error": "Bundle verification failed", "details": bundle_check["errors"]}, as_json)
         sys.exit(1)
+    bundle_compatibility = verify_frozen_bundle_compatibility(exp_path, contract, lock)
+    if bundle_compatibility["status"] != "PASS":
+        _output({"status": "ERROR", "error": "Frozen bundle compatibility verification failed", "details": bundle_compatibility}, as_json)
+        sys.exit(1)
+    materialized_bundle_id = bundle_check["bundle_id"]
+    if materialized_bundle_id != bundle_compatibility["materialized_bundle_id"]:
+        _output({
+            "status": "ERROR",
+            "error": "Materialized bundle does not match the verified canonical bundle content identity",
+            "details": bundle_compatibility,
+        }, as_json)
+        sys.exit(1)
 
     run = lifecycle.create_run(
         experiment_id=contract.experiment_id,
         version=contract.version,
         backend=backend,
         contract_hash=lock["contract_hash"],
-        bundle_id=lock["identity"]["bundle_id"],
+        bundle_id=materialized_bundle_id,
         kernel=kernel,
         accelerator=accelerator,
+        metadata={"bundle_compatibility": bundle_compatibility},
     )
 
     # Select backend
@@ -740,7 +753,7 @@ def run_cmd(experiment, backend, kernel, accelerator, input_bindings, environmen
     context = RunContext(
         experiment_id=contract.experiment_id,
         version=contract.version,
-        bundle_id=lock["identity"]["bundle_id"],
+        bundle_id=materialized_bundle_id,
         contract_hash=lock["contract_hash"],
         kernel=kernel,
         accelerator=accelerator,
@@ -772,7 +785,8 @@ def run_cmd(experiment, backend, kernel, accelerator, input_bindings, environmen
             "experiment_id": contract.experiment_id,
             "version": contract.version,
             "backend": backend,
-            "bundle_id": lock["identity"]["bundle_id"],
+            "bundle_id": materialized_bundle_id,
+            "frozen_bundle_id": lock["identity"]["bundle_id"],
             "kernel": kernel,
             "accelerator": accelerator,
         }

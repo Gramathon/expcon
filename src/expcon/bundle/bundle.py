@@ -30,12 +30,81 @@ from expcon.contract.canonical import (
 )
 from expcon.hashing.canonical import canonical_bytes
 from expcon.hashing.digest import sha256_bytes, file_sha256
-from expcon.bundle.source import repository_root, resolve_entrypoints, resolve_source_closure, source_manifest
+from expcon.bundle.source import (
+    canonical_source_manifest,
+    legacy_source_manifest,
+    repository_root,
+    resolve_entrypoints,
+    resolve_source_closure,
+    source_manifest,
+)
 from expcon.runner.invocation import resolve_invocation
 
 
 class BundleError(Exception):
     """Raised when bundle creation or verification fails."""
+
+
+BUNDLE_IDENTITY_ALGORITHM_V1 = "expcon-bundle-v1"
+BUNDLE_IDENTITY_ALGORITHM_V2 = "expcon-bundle-v2"
+
+
+@dataclass(frozen=True)
+class BundleIdentity:
+    """A transport-independent identity for executable bundle content."""
+
+    algorithm: str
+    bundle_id: str
+    source_hash: str
+    dependency_hash: str
+    dataset_hashes: dict[str, str]
+    runner_hash: str
+    config_hash: str
+    content: dict[str, Any]
+
+
+def _legacy_bundle_content(*, contract_hash: str, scientific_hash: str,
+                           execution_hash: str, source_hash: str,
+                           dependency_hash: str, dataset_hashes: dict[str, str],
+                           runner_hash: str, config_hash: str) -> dict[str, Any]:
+    """The frozen v1 bundle identity representation (kept for inspection)."""
+    return {
+        "contract_hash": contract_hash,
+        "scientific_hash": scientific_hash,
+        "execution_hash": execution_hash,
+        "source_hash": source_hash,
+        "dependency_hash": dependency_hash,
+        "dataset_hashes": dataset_hashes,
+        "runner_hash": runner_hash,
+        "config_hash": config_hash,
+    }
+
+
+def bundle_id_for(manifest: dict[str, Any]) -> str:
+    """Compute a bundle identity using the manifest's declared algorithm.
+
+    v1 is deliberately retained byte-for-byte for historical locks.  v2 is a
+    complete, transport-independent executable-content representation.
+    """
+    algorithm = manifest.get("bundle_identity_algorithm", BUNDLE_IDENTITY_ALGORITHM_V1)
+    if algorithm == BUNDLE_IDENTITY_ALGORITHM_V1:
+        protected = _legacy_bundle_content(
+            contract_hash=manifest["contract_hash"],
+            scientific_hash=manifest["scientific_hash"],
+            execution_hash=manifest["execution_hash"],
+            source_hash=manifest["source_hash"],
+            dependency_hash=manifest["dependency_hash"],
+            dataset_hashes=manifest["dataset_hashes"],
+            runner_hash=manifest["runner_hash"],
+            config_hash=manifest["config_hash"],
+        )
+        return sha256_bytes(canonical_bytes(protected))
+    if algorithm == BUNDLE_IDENTITY_ALGORITHM_V2:
+        content = manifest.get("bundle_content")
+        if not isinstance(content, dict):
+            raise BundleError("expcon-bundle-v2 manifest requires bundle_content")
+        return sha256_bytes(canonical_bytes({"algorithm": algorithm, "content": content}))
+    raise BundleError(f"Unsupported bundle identity algorithm: {algorithm}")
 
 
 @dataclass
@@ -70,20 +139,174 @@ class BundleManifest:
         }
 
 
-def bundle_id_for(manifest: dict[str, Any]) -> str:
-    """Compute the bundle_id from a bundle manifest dict."""
-    # Only include protected fields in the identity
-    protected = {
-        "contract_hash": manifest["contract_hash"],
-        "scientific_hash": manifest["scientific_hash"],
-        "execution_hash": manifest["execution_hash"],
-        "source_hash": manifest["source_hash"],
-        "dependency_hash": manifest["dependency_hash"],
-        "dataset_hashes": manifest["dataset_hashes"],
-        "runner_hash": manifest["runner_hash"],
-        "config_hash": manifest["config_hash"],
+def _dependency_hash(experiment_dir: Path, contract: ExperimentContract) -> str:
+    lock_file = contract.get("environment", "dependency_lock", default="uv.lock")
+    lock_path = experiment_dir / str(lock_file)
+    if not lock_path.exists():
+        lock_path = experiment_dir.parent / str(lock_file)
+    if lock_path.exists():
+        return file_sha256(lock_path)
+    return sha256_bytes(canonical_bytes({"missing": str(lock_file)}))
+
+
+def _dataset_hashes(experiment_dir: Path, contract: ExperimentContract) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for dataset in contract.get("data", "datasets", default=[]):
+        if isinstance(dataset, dict) and "path" in dataset:
+            path = experiment_dir / str(dataset["path"])
+            result[str(dataset["path"])] = (
+                file_sha256(path) if path.exists()
+                else sha256_bytes(canonical_bytes({"missing": str(dataset["path"])}))
+            )
+    return result
+
+
+def _runner_hash(experiment_dir: Path, contract: ExperimentContract) -> tuple[str, list[dict[str, str]]]:
+    entries = [
+        {"entrypoint": entry.declared_path, "sha256": entry.sha256}
+        for entry in resolve_entrypoints(experiment_dir, contract)
+    ]
+    if not entries:
+        return sha256_bytes(canonical_bytes({"no_stages": True})), entries
+    return sha256_bytes(canonical_bytes(entries)), entries
+
+
+def _config_hash(experiment_dir: Path, contract: ExperimentContract) -> str:
+    configs = contract.get("execution", "configs", default=[])
+    if not configs:
+        configs_dir = experiment_dir / "configs"
+        if configs_dir.exists():
+            configs = [str(path.relative_to(experiment_dir)) for path in configs_dir.iterdir() if path.is_file()]
+    entries = []
+    for config in configs:
+        path = experiment_dir / str(config)
+        if path.exists():
+            entries.append({"path": str(config), "sha256": file_sha256(path)})
+    return sha256_bytes(canonical_bytes(sorted(entries, key=lambda entry: entry["path"])))
+
+
+def compute_bundle_identity(
+    experiment_dir: Path | str,
+    contract: ExperimentContract,
+    *,
+    algorithm: str = BUNDLE_IDENTITY_ALGORITHM_V2,
+) -> BundleIdentity:
+    """Compute one canonical identity for a candidate executable bundle.
+
+    The v2 representation contains only frozen executable semantics and byte
+    identities.  Absolute checkout roots, temporary bundle directories,
+    provider mounts, output roots, and timestamps are intentionally absent.
+    """
+    experiment_dir = Path(experiment_dir).resolve()
+    contract_data = contract.data
+    repository_manifest = source_manifest(experiment_dir, contract)
+    closure = resolve_source_closure(experiment_dir, contract)
+    source_provenance = canonical_source_manifest(repository_manifest)
+    source_hash = sha256_bytes(canonical_bytes(source_provenance))
+    dependency_hash = _dependency_hash(experiment_dir, contract)
+    dataset_hashes = _dataset_hashes(experiment_dir, contract)
+    runner_hash, entrypoints = _runner_hash(experiment_dir, contract)
+    config_hash = _config_hash(experiment_dir, contract)
+    contract_hash = compute_contract_hash(contract_data)
+    scientific_hash = compute_scientific_hash(contract_data)
+    execution_hash = compute_execution_hash(contract_data)
+
+    if algorithm == BUNDLE_IDENTITY_ALGORITHM_V1:
+        # v1 used the absolute-root diagnostic manifest as its source field.
+        legacy_manifest = legacy_source_manifest(experiment_dir, contract)
+        legacy_source_hash = sha256_bytes(canonical_bytes(legacy_manifest.to_dict()))
+        content = _legacy_bundle_content(
+            contract_hash=contract_hash, scientific_hash=scientific_hash,
+            execution_hash=execution_hash, source_hash=legacy_source_hash,
+            dependency_hash=dependency_hash, dataset_hashes=dataset_hashes,
+            runner_hash=runner_hash, config_hash=config_hash,
+        )
+        return BundleIdentity(
+            algorithm=algorithm, bundle_id=sha256_bytes(canonical_bytes(content)),
+            source_hash=legacy_source_hash, dependency_hash=dependency_hash,
+            dataset_hashes=dataset_hashes, runner_hash=runner_hash,
+            config_hash=config_hash, content=content,
+        )
+    if algorithm != BUNDLE_IDENTITY_ALGORITHM_V2:
+        raise BundleError(f"Unsupported bundle identity algorithm: {algorithm}")
+
+    content = {
+        "contract_hash": contract_hash,
+        "scientific_hash": scientific_hash,
+        "execution_hash": execution_hash,
+        "repository_source_manifest": source_provenance,
+        "repository_source_manifest_sha256": source_hash,
+        "execution_source_closure": closure.to_dict(),
+        "execution_source_closure_sha256": closure.sha256,
+        "entrypoints": entrypoints,
+        "runner_hash": runner_hash,
+        "invocation": contract_data.get("execution", {}).get("invocation"),
+        "dependency_hash": dependency_hash,
+        "dataset_hashes": dataset_hashes,
+        "config_hash": config_hash,
     }
-    return sha256_bytes(canonical_bytes(protected))
+    return BundleIdentity(
+        algorithm=algorithm,
+        bundle_id=sha256_bytes(canonical_bytes({"algorithm": algorithm, "content": content})),
+        source_hash=source_hash, dependency_hash=dependency_hash,
+        dataset_hashes=dataset_hashes, runner_hash=runner_hash,
+        config_hash=config_hash, content=content,
+    )
+
+
+def verify_frozen_bundle_compatibility(
+    experiment_dir: Path | str,
+    contract: ExperimentContract,
+    lock: dict[str, Any],
+) -> dict[str, Any]:
+    """Verify a frozen lock against its declared bundle-identity algorithm.
+
+    A v1 lock is never reinterpreted as v2.  If it independently locks every
+    v2-only execution component, this returns an explicit compatibility
+    attestation containing *both* identities.  Otherwise execution must fail
+    closed rather than equating the two algorithms.
+    """
+    algorithm = lock.get("identity", {}).get(
+        "bundle_identity_algorithm", BUNDLE_IDENTITY_ALGORITHM_V1
+    )
+    frozen_bundle_id = lock.get("identity", {}).get("bundle_id")
+    if algorithm == BUNDLE_IDENTITY_ALGORITHM_V2:
+        current = compute_bundle_identity(experiment_dir, contract, algorithm=algorithm)
+        return {
+            "status": "PASS" if current.bundle_id == frozen_bundle_id else "FAIL",
+            "algorithm": algorithm,
+            "frozen_bundle_id": frozen_bundle_id,
+            "materialized_bundle_id": current.bundle_id,
+            "cryptographically_complete": current.bundle_id == frozen_bundle_id,
+        }
+    if algorithm != BUNDLE_IDENTITY_ALGORITHM_V1:
+        return {"status": "FAIL", "algorithm": algorithm, "error": "Unsupported frozen bundle algorithm"}
+
+    legacy = compute_bundle_identity(experiment_dir, contract, algorithm=algorithm)
+    modern = compute_bundle_identity(experiment_dir, contract, algorithm=BUNDLE_IDENTITY_ALGORITHM_V2)
+    source_spec = contract.get("execution", "source", default={})
+    invocation = contract.get("execution", "invocation", default=None)
+    closure_declared = isinstance(source_spec, dict) and bool(source_spec.get("expected_sha256"))
+    closure_matches = closure_declared and source_spec.get("expected_sha256") == modern.content["execution_source_closure_sha256"]
+    complete = (
+        legacy.bundle_id == frozen_bundle_id
+        and compute_contract_hash(contract.data) == lock.get("contract_hash")
+        and lock.get("locks", {}).get("runner") == modern.runner_hash
+        and closure_matches
+        and invocation is not None
+    )
+    return {
+        "status": "PASS" if complete else "FAIL",
+        "algorithm": algorithm,
+        "frozen_bundle_id": frozen_bundle_id,
+        "materialized_bundle_id": modern.bundle_id,
+        "legacy_bundle_id_verified": legacy.bundle_id == frozen_bundle_id,
+        "contract_hash_verified": compute_contract_hash(contract.data) == lock.get("contract_hash"),
+        "runner_verified": lock.get("locks", {}).get("runner") == modern.runner_hash,
+        "execution_source_closure_verified": closure_matches,
+        "invocation_declared": invocation is not None,
+        "cryptographically_complete": complete,
+    }
 
 
 class BundleBuilder:
@@ -166,41 +389,43 @@ class BundleBuilder:
         if require_frozen and not lock_path.exists():
             raise BundleError("Experiment must be frozen before it can be bundled")
 
+        identity = compute_bundle_identity(self.experiment_dir, contract)
         contract_hash = compute_contract_hash(contract_data)
         scientific_hash = compute_scientific_hash(contract_data)
         execution_hash = compute_execution_hash(contract_data)
-
-        # Resolve declared repository sources before calculating the identity.
-        # In particular, stage entrypoints may live outside experiment_dir.
         discovered_source_manifest = source_manifest(self.experiment_dir, contract)
         closure = resolve_source_closure(self.experiment_dir, contract)
-        source_hash = sha256_bytes(canonical_bytes({"repository_manifest": discovered_source_manifest.to_dict(), "execution_source": closure.to_dict()}))
-
-        # Compute dependency hash
-        dep_hash = self._compute_dependency_hash(contract)
-
-        # Compute dataset hashes
-        dataset_hashes = self._compute_dataset_hashes(contract)
-
-        # Compute runner hash
-        runner_hash = self._compute_runner_hash(contract)
-
-        # Compute config hash
-        config_hash = self._compute_config_hash(contract)
 
         manifest_dict = {
             "bundle_id": "",
+            "bundle_identity_algorithm": identity.algorithm,
+            "bundle_content": identity.content,
             "contract_hash": contract_hash,
             "scientific_hash": scientific_hash,
             "execution_hash": execution_hash,
-            "source_hash": source_hash,
-            "dependency_hash": dep_hash,
-            "dataset_hashes": dataset_hashes,
-            "runner_hash": runner_hash,
-            "config_hash": config_hash,
+            "source_hash": identity.source_hash,
+            "dependency_hash": identity.dependency_hash,
+            "dataset_hashes": identity.dataset_hashes,
+            "runner_hash": identity.runner_hash,
+            "config_hash": identity.config_hash,
             "files": [],
         }
-        bundle_id = bundle_id_for(manifest_dict)
+        bundle_id = identity.bundle_id
+
+        legacy_compatibility = None
+        if require_frozen:
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            lock_algorithm = lock.get("identity", {}).get(
+                "bundle_identity_algorithm", BUNDLE_IDENTITY_ALGORITHM_V1
+            )
+            if lock_algorithm == BUNDLE_IDENTITY_ALGORITHM_V2 and lock.get("identity", {}).get("bundle_id") != bundle_id:
+                raise BundleError("Frozen v2 bundle content identity diverged; execution is refused")
+            if lock_algorithm == BUNDLE_IDENTITY_ALGORITHM_V1:
+                legacy_compatibility = verify_frozen_bundle_compatibility(
+                    self.experiment_dir, contract, lock
+                )
+                if legacy_compatibility["status"] != "PASS":
+                    raise BundleError("Frozen v1 bundle cannot be cryptographically verified under compatibility")
 
         # Create bundle directory
         if self.bundle_dir.exists():
@@ -222,7 +447,7 @@ class BundleBuilder:
         # Copy source manifest
         source_manifest_file = self.bundle_dir / "source_manifest.json"
         source_manifest_file.write_text(
-            json.dumps(discovered_source_manifest.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            json.dumps(canonical_source_manifest(discovered_source_manifest), indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         (self.bundle_dir / "execution_source_manifest.json").write_text(
             json.dumps(closure.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -243,6 +468,8 @@ class BundleBuilder:
         manifest_dict["files"] = self._collect_file_hashes()
         manifest_dict["bundle_id"] = bundle_id
         manifest_dict["created_at"] = datetime.now(timezone.utc).isoformat()
+        if legacy_compatibility is not None:
+            manifest_dict["legacy_compatibility"] = legacy_compatibility
 
         manifest_file = self.bundle_dir / "bundle_manifest.json"
         manifest_file.write_text(
@@ -258,11 +485,12 @@ class BundleBuilder:
                     "contract_hash": contract_hash,
                     "scientific_hash": scientific_hash,
                     "execution_hash": execution_hash,
-                    "source_hash": source_hash,
-                    "dependency_hash": dep_hash,
-                    "config_hash": config_hash,
-                    "runner_hash": runner_hash,
-                    "dataset_hashes": dataset_hashes,
+                    "bundle_identity_algorithm": identity.algorithm,
+                    "source_hash": identity.source_hash,
+                    "dependency_hash": identity.dependency_hash,
+                    "config_hash": identity.config_hash,
+                    "runner_hash": identity.runner_hash,
+                    "dataset_hashes": identity.dataset_hashes,
                 },
                 indent=2,
                 sort_keys=True,
