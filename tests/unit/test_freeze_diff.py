@@ -1,13 +1,11 @@
 """Tests for freeze and diff operations."""
 
 import json
-from pathlib import Path
 
 import pytest
 import yaml
 
 from expcon.contract.operations import validate_experiment, freeze_experiment, diff_experiment, ContractOperationError
-from expcon.contract.contract import load_contract
 
 
 @pytest.fixture
@@ -96,7 +94,6 @@ class TestDiff:
         result = diff_experiment(exp_dir)
         assert result["divergence_detected"]
         # The divergence should mention seed somewhere
-        all_fields = " ".join(d["field"] for d in result["divergences"])
         assert "seed" in str(result["divergences"])
 
     def test_diff_detects_source_change(self, minimal_experiment):

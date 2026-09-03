@@ -8,11 +8,10 @@ disappears, Expcon reconstructs state from persistent run records.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 class WorkspaceError(Exception):

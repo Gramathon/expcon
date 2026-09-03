@@ -12,11 +12,10 @@ from typing import Any
 
 import click
 
-from expcon.contract.contract import ExperimentContract, load_contract
+from expcon.contract.contract import load_contract
 from expcon.contract.operations import validate_experiment, freeze_experiment, diff_experiment
 from expcon.contract.canonical import contract_identity
 from expcon.lifecycle.experiment_state import ExperimentLifecycle
-from expcon.lifecycle.state import ExperimentState
 from expcon.bundle.bundle import BundleBuilder, BundleVerifier
 from expcon.runner.runner import StageRunner, RunContext
 from expcon.runner.backends import LocalBackend, KaggleBackend, _valid_kaggle_ref
@@ -25,7 +24,7 @@ from expcon.backends.kaggle import KaggleApiTransport, KaggleCliTransport, Kaggl
 from expcon.backends.tinker import TinkerBackend, TinkerCliTransport, TinkerSdkTransport
 from expcon.evidence.evidence import EvidenceVerifier
 from expcon.adjudication.adjudication import Adjudicator
-from expcon.workspace.workspace import WorkspaceManager
+from expcon.workspace.workspace import WorkspaceError, WorkspaceManager
 from expcon.artifacts.artifact import ArtifactRegistry
 from expcon.util.path import find_workspace_root
 
@@ -764,7 +763,7 @@ def run_cmd(experiment, backend, kernel, accelerator, input_bindings, environmen
 
     # Submit
     try:
-        backend_run_id = runner.run(bundle_dir, context)
+        runner.run(bundle_dir, context)
         lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, "STAGE_COMPLETED"), "Stages completed")
         lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, "RESULTS_AVAILABLE"), "Results available")
         result = {
@@ -949,8 +948,6 @@ def fetch_cmd(run_id, output_dir, as_json):
     # Package evidence into a verifiable bundle with manifest
     import shutil
     from datetime import datetime, timezone
-    from expcon.hashing.canonical import canonical_bytes
-    from expcon.hashing.digest import sha256_bytes, file_sha256
 
     run_dir = lifecycle.run_dir(run_id)
 
@@ -1033,7 +1030,7 @@ def verify_cmd(run_id, bundle, as_json):
     lifecycle = ExperimentLifecycle(workspace_root)
 
     try:
-        run = lifecycle.load_run(run_id)
+        lifecycle.load_run(run_id)
     except KeyError:
         _output({"status": "ERROR", "error": f"Run not found: {run_id}"}, as_json)
         sys.exit(1)
@@ -1085,7 +1082,7 @@ def adjudicate_cmd(run_id, as_json):
 
     if not as_json:
         click.secho("=" * 60, fg="cyan")
-        click.secho(f"ADJUDICATION REPORT", fg="cyan", bold=True)
+        click.secho("ADJUDICATION REPORT", fg="cyan", bold=True)
         click.secho("=" * 60, fg="cyan")
         click.echo(f"  Experiment: {result.experiment_id}/{result.version}")
         click.echo(f"  Run ID:     {result.run_id}")

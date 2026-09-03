@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from expcon.bundle.bundle import BundleBuilder, BundleVerifier, bundle_id_for, BundleError
+from expcon.bundle.bundle import BundleBuilder, BundleVerifier
 from expcon.contract.operations import freeze_experiment
 from expcon.bundle.source import SourceResolutionError, resolve_entrypoint
 from expcon.contract.contract import load_contract

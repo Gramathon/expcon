@@ -9,19 +9,18 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from expcon.contract.contract import ExperimentContract, ContractError, load_contract, validate_contract
+from expcon.contract.contract import ExperimentContract, load_contract, validate_contract
 from expcon.contract.canonical import (
     compute_contract_hash,
     compute_scientific_hash,
     compute_execution_hash,
     extract_scientific_parameters,
-    contract_identity,
 )
-from expcon.hashing.canonical import canonical_bytes, canonical_json
+from expcon.hashing.canonical import canonical_bytes
 from expcon.hashing.digest import sha256_bytes, file_sha256
-from expcon.lifecycle.state import ExperimentState, StateError, transition
+from expcon.lifecycle.state import ExperimentState
 from expcon.lifecycle.experiment_state import ExperimentLifecycle
 from expcon.hashing.manifest import compute_directory_manifest
 from expcon.util.path import find_workspace_root
@@ -147,7 +146,7 @@ def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | N
     experiment_dir = Path(experiment_dir).resolve()
 
     # Step 1: Validate
-    validation = validate_experiment(experiment_dir)
+    validate_experiment(experiment_dir)
 
     # Step 2: Determine current state
     if workspace_root is None:

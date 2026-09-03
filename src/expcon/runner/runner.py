@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from expcon.runner.backends import ExecutionBackend, RunContext, RunStatus
+from expcon.runner.backends import ExecutionBackend, RunStatus
 
 
 @dataclass

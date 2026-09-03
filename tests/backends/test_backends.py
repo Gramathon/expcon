@@ -10,8 +10,6 @@ from expcon.runner.backends import (
     LocalBackend,
     KaggleBackend,
     RunContext,
-    RunStatus,
-    BackendError,
 )
 from expcon.runner.runner import StageRunner
 

@@ -1,7 +1,5 @@
 """Integration tests for lifecycle transitions."""
 
-import json
-from pathlib import Path
 
 import pytest
 import yaml
@@ -9,7 +7,6 @@ import yaml
 from expcon.contract.operations import freeze_experiment
 from expcon.lifecycle.experiment_state import ExperimentLifecycle
 from expcon.lifecycle.state import ExperimentState, RunState, StateError
-from expcon.contract.contract import load_contract
 
 
 @pytest.fixture

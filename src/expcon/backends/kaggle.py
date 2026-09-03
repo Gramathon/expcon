@@ -5,7 +5,6 @@ authentication supplied by the official client, but never owns credentials.
 """
 from __future__ import annotations
 
-import json
 import random
 import shutil
 import subprocess

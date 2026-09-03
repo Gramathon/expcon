@@ -7,7 +7,6 @@ the global .expcon/ directory.  tmux sessions are NOT the database.
 from __future__ import annotations
 
 import json
-import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -17,7 +16,6 @@ from typing import Any, Optional
 from expcon.lifecycle.state import (
     ExperimentState,
     RunState,
-    StateError,
     transition as validate_transition,
 )
 

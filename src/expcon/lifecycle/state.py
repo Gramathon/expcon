@@ -7,7 +7,6 @@ this module should mutate state directly; always use the transition functions.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
 
 
 class ExperimentState(str, Enum):

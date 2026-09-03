@@ -16,9 +16,7 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
 import sys
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -132,7 +130,7 @@ class LocalBackend(ExecutionBackend):
         # Execute stages from the bundle
         bundle_path = Path(bundle)
         manifest_path = bundle_path / "bundle_manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        json.loads(manifest_path.read_text(encoding="utf-8"))
 
         stages = self._extract_stages_from_contract(bundle_path)
         results = []
@@ -176,7 +174,7 @@ class LocalBackend(ExecutionBackend):
 
     def _execute_stage(
         self, stage: dict[str, Any], bundle_path: Path, run_dir: Path, context: RunContext
-    ) -> "StageResult":
+    ) -> Any:
         from expcon.runner.runner import StageResult
 
         stage_id = stage.get("id", "unknown")
@@ -517,8 +515,10 @@ print(json.dumps(results, indent=2))
                 # Explicit fallback: the remote identity stays API-bound, but
                 # current operational status may come from the official CLI.
                 output = self.cli.kernel_status(ref).lower()
-                if "complete" in output: status = "completed"
-                elif "error" in output or "failed" in output: status = "failed"
+                if "complete" in output:
+                    status = "completed"
+                elif "error" in output or "failed" in output:
+                    status = "failed"
             except Exception:
                 pass
 

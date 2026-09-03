@@ -18,13 +18,12 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from expcon.hashing.canonical import canonical_bytes
 from expcon.hashing.digest import sha256_bytes, file_sha256
 from expcon.hashing.manifest import compute_directory_manifest
 from expcon.contract.canonical import compute_contract_hash
-from expcon.artifacts.artifact import ArtifactRegistry
 
 
 class EvidenceError(Exception):
@@ -137,7 +136,6 @@ class EvidenceVerifier:
         # 3. Verify artifacts
         artifacts_file = self.evidence_dir / "artifacts.json"
         if artifacts_file.exists():
-            registry = ArtifactRegistry(self.evidence_dir)
             artifact_data = json.loads(artifacts_file.read_text(encoding="utf-8"))
             for artifact_entry in artifact_data.get("artifacts", []):
                 artifact_file = self.evidence_dir / "artifacts" / artifact_entry.get("path", "")

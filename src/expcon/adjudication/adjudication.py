@@ -17,7 +17,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
-from expcon.lifecycle.state import ExperimentState, RunState
+from expcon.lifecycle.state import RunState
 
 
 class ScientificVerdict(str, Enum):

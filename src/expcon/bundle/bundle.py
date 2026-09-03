@@ -16,12 +16,10 @@ from __future__ import annotations
 import json
 import ast
 import shutil
-import tarfile
 import tempfile
-import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from expcon.contract.contract import ExperimentContract, load_contract
 from expcon.contract.canonical import (
@@ -30,9 +28,8 @@ from expcon.contract.canonical import (
     compute_execution_hash,
     compute_execution_identity_hash_v2,
 )
-from expcon.hashing.canonical import canonical_bytes, canonical_json
+from expcon.hashing.canonical import canonical_bytes
 from expcon.hashing.digest import sha256_bytes, file_sha256
-from expcon.hashing.manifest import verify_directory_manifest
 from expcon.bundle.source import repository_root, resolve_entrypoints, resolve_source_closure, source_manifest
 from expcon.runner.invocation import resolve_invocation
 
@@ -98,7 +95,6 @@ class BundleBuilder:
 
     def build(self) -> tuple[Path, str]:
         """Build the bundle and return (bundle_path, bundle_id)."""
-        from datetime import datetime, timezone
 
         return self._build(require_frozen=True)
 

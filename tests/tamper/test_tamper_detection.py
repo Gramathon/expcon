@@ -1,7 +1,6 @@
 """Adversarial tamper detection tests."""
 
 import json
-from pathlib import Path
 
 import pytest
 import yaml
@@ -128,7 +127,7 @@ class TestPathTraversal:
     """Archive path traversal must be prevented."""
 
     def test_path_traversal_blocked(self, tmp_path):
-        from expcon.util.path import safe_extract_zip, is_path_safe
+        from expcon.util.path import safe_extract_zip
 
         # Create a malicious zip with path traversal
         import zipfile
