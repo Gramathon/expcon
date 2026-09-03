@@ -14,6 +14,7 @@ Any protected modification of bundle contents fails verification.
 from __future__ import annotations
 
 import json
+import ast
 import shutil
 import tarfile
 import tempfile
@@ -27,10 +28,13 @@ from expcon.contract.canonical import (
     compute_contract_hash,
     compute_scientific_hash,
     compute_execution_hash,
+    compute_execution_identity_hash_v2,
 )
 from expcon.hashing.canonical import canonical_bytes, canonical_json
 from expcon.hashing.digest import sha256_bytes, file_sha256
-from expcon.hashing.manifest import compute_directory_manifest, verify_directory_manifest
+from expcon.hashing.manifest import verify_directory_manifest
+from expcon.bundle.source import repository_root, resolve_entrypoints, resolve_source_closure, source_manifest
+from expcon.runner.invocation import resolve_invocation
 
 
 class BundleError(Exception):
@@ -96,20 +100,85 @@ class BundleBuilder:
         """Build the bundle and return (bundle_path, bundle_id)."""
         from datetime import datetime, timezone
 
+        return self._build(require_frozen=True)
+
+    def preflight(
+        self, *, input_bindings: dict[str, str] | None = None, environment_bindings: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Verify an ephemeral candidate bundle without a run or lifecycle change."""
+        contract_data = load_contract(self.experiment_dir / "EXPERIMENT.yaml").data
+        with tempfile.TemporaryDirectory(prefix="expcon-preflight-") as temporary:
+            original = self.bundle_dir
+            self.bundle_dir = Path(temporary) / "bundle"
+            try:
+                bundle_path, bundle_id = self._build(require_frozen=False)
+                verification = BundleVerifier(bundle_path).verify()
+                closure = json.loads((bundle_path / "execution_source_manifest.json").read_text(encoding="utf-8"))
+                self._static_python_import_check(bundle_path, closure, repository_root(self.experiment_dir, load_contract(self.experiment_dir / "EXPERIMENT.yaml")))
+                invocation = resolve_invocation(
+                    contract_data.get("execution", {}).get("invocation"),
+                    bundle_root=bundle_path,
+                    output_root=bundle_path / "candidate-output",
+                    input_bindings=input_bindings or {},
+                    environment_bindings=environment_bindings or {},
+                )
+                return {
+                    "status": "PASS" if verification["status"] == "PASS" else "FAIL",
+                    "bundle_id": bundle_id,
+                    "verification": verification,
+                    "entrypoint": closure["entrypoint"],
+                    "execution_source_sha256": sha256_bytes(canonical_bytes(closure)),
+                    "execution_identity_sha256": compute_execution_identity_hash_v2(
+                        contract_data, runner_sha256=closure["entrypoint"]["sha256"],
+                        execution_source_sha256=sha256_bytes(canonical_bytes(closure)),
+                    ),
+                    "source_file_count": len(closure["files"]),
+                    "invocation": invocation.attestation,
+                    "ephemeral": True,
+                }
+            finally:
+                self.bundle_dir = original
+
+    @staticmethod
+    def _static_python_import_check(bundle_path: Path, closure: dict[str, Any], repository_root: Path) -> None:
+        """Detect unbundled local imports without importing or executing code."""
+        script = bundle_path / closure["entrypoint"]["bundle_relative_path"]
+        try:
+            tree = ast.parse(script.read_text(encoding="utf-8"), filename=str(script))
+        except SyntaxError as exc:
+            raise BundleError(f"Entrypoint syntax check failed: {exc}") from exc
+        roots = {entry["repository_relative_path"].split("/")[1]
+                 for entry in closure["files"]
+                 if entry["repository_relative_path"].startswith("src/") and "/" in entry["repository_relative_path"]}
+        local_roots = {path.name for path in (repository_root / "src").iterdir()} if (repository_root / "src").is_dir() else set()
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                imported.add(node.module.split(".")[0])
+        missing = sorted(root for root in imported & local_roots if root not in roots or not (bundle_path / "source" / root).exists())
+        if missing:
+            raise BundleError(f"Entrypoint imports repository package(s) absent from declared execution.source.include: {missing}")
+
+    def _build(self, *, require_frozen: bool) -> tuple[Path, str]:
+        from datetime import datetime, timezone
+
         contract = load_contract(self.experiment_dir / "EXPERIMENT.yaml")
         contract_data = contract.data
         lock_path = self.experiment_dir / "contract.lock.json"
-        if not lock_path.exists():
+        if require_frozen and not lock_path.exists():
             raise BundleError("Experiment must be frozen before it can be bundled")
 
         contract_hash = compute_contract_hash(contract_data)
         scientific_hash = compute_scientific_hash(contract_data)
         execution_hash = compute_execution_hash(contract_data)
 
-        # Compute source hash (only from declared source directories)
-        source_root = self._resolve_source_root(contract)
-        source_manifest = compute_directory_manifest(source_root, skip_hidden=True, include=["src/", "scripts/", "configs/"])
-        source_hash = sha256_bytes(canonical_bytes(source_manifest.to_dict()))
+        # Resolve declared repository sources before calculating the identity.
+        # In particular, stage entrypoints may live outside experiment_dir.
+        discovered_source_manifest = source_manifest(self.experiment_dir, contract)
+        closure = resolve_source_closure(self.experiment_dir, contract)
+        source_hash = sha256_bytes(canonical_bytes({"repository_manifest": discovered_source_manifest.to_dict(), "execution_source": closure.to_dict()}))
 
         # Compute dependency hash
         dep_hash = self._compute_dependency_hash(contract)
@@ -145,7 +214,8 @@ class BundleBuilder:
         # The freeze record is protected bundle input, never regenerated by a
         # backend.  It permits a verifier to bind execution to the frozen
         # identity rather than to mutable YAML.
-        shutil.copy2(lock_path, self.bundle_dir / "contract.lock.json")
+        if lock_path.exists():
+            shutil.copy2(lock_path, self.bundle_dir / "contract.lock.json")
 
         # Copy resolved contract
         resolved_contract = self.bundle_dir / "resolved_contract.json"
@@ -156,7 +226,10 @@ class BundleBuilder:
         # Copy source manifest
         source_manifest_file = self.bundle_dir / "source_manifest.json"
         source_manifest_file.write_text(
-            json.dumps(source_manifest.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            json.dumps(discovered_source_manifest.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        (self.bundle_dir / "execution_source_manifest.json").write_text(
+            json.dumps(closure.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
 
         # Copy configs
@@ -168,6 +241,7 @@ class BundleBuilder:
         runner_dir = self.bundle_dir / "runner"
         runner_dir.mkdir(exist_ok=True)
         self._copy_runner(contract, runner_dir)
+        self._copy_source_closure(closure)
 
         # Write bundle manifest
         manifest_dict["files"] = self._collect_file_hashes()
@@ -203,14 +277,6 @@ class BundleBuilder:
 
         return self.bundle_dir, bundle_id
 
-    def _resolve_source_root(self, contract: ExperimentContract) -> Path:
-        repo = contract.get("source", "repository", default=".")
-        if str(repo) == ".":
-            # Use the experiment dir itself as source root
-            # This ensures the source hash is deterministic regardless of bundle state
-            return self.experiment_dir
-        return (self.experiment_dir / str(repo)).resolve()
-
     def _compute_dependency_hash(self, contract: ExperimentContract) -> str:
         lock_file = contract.get("environment", "dependency_lock", default="uv.lock")
         lock_path = self.experiment_dir / str(lock_file)
@@ -234,17 +300,11 @@ class BundleBuilder:
         return result
 
     def _compute_runner_hash(self, contract: ExperimentContract) -> str:
-        stages = contract.get("execution", "stages", default=[])
-        if stages:
-            entries = []
-            for stage in stages:
-                if isinstance(stage, dict) and "entrypoint" in stage:
-                    ep_path = self.experiment_dir / str(stage["entrypoint"])
-                    if ep_path.exists():
-                        entries.append({"entrypoint": stage["entrypoint"], "sha256": file_sha256(ep_path)})
-                    else:
-                        entries.append({"entrypoint": stage["entrypoint"], "sha256": "MISSING"})
-            return sha256_bytes(canonical_bytes(entries))
+        entries = resolve_entrypoints(self.experiment_dir, contract)
+        if entries:
+            return sha256_bytes(canonical_bytes([
+                {"entrypoint": entry.declared_path, "sha256": entry.sha256} for entry in entries
+            ]))
         return sha256_bytes(canonical_bytes({"no_stages": True}))
 
     def _compute_config_hash(self, contract: ExperimentContract) -> str:
@@ -270,12 +330,16 @@ class BundleBuilder:
                     shutil.copy2(f, dest / f.name)
 
     def _copy_runner(self, contract: ExperimentContract, dest: Path) -> None:
-        stages = contract.get("execution", "stages", default=[])
-        for stage in stages:
-            if isinstance(stage, dict) and "entrypoint" in stage:
-                ep_path = self.experiment_dir / str(stage["entrypoint"])
-                if ep_path.exists():
-                    shutil.copy2(ep_path, dest / Path(stage["entrypoint"]).name)
+        for entry in resolve_entrypoints(self.experiment_dir, contract):
+            target = self.bundle_dir / entry.bundle_relative_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(entry.source_path, target)
+
+    def _copy_source_closure(self, closure) -> None:
+        for entry in closure.entries:
+            target = self.bundle_dir / entry.bundle_relative_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(entry.source_path, target)
 
     def _collect_file_hashes(self) -> list[dict[str, Any]]:
         files = []

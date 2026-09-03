@@ -33,6 +33,7 @@ def exp_with_lifecycle(tmp_path):
     exp_dir = tmp_path / "experiments" / "e00_v001"
     exp_dir.mkdir(parents=True)
     (exp_dir / "EXPERIMENT.yaml").write_text(yaml.safe_dump(contract), encoding="utf-8")
+    (exp_dir / "run.py").write_text("print('lifecycle runner')\n", encoding="utf-8")
     return exp_dir, ExperimentLifecycle(tmp_path)
 
 

@@ -11,6 +11,7 @@ from expcon.cli.commands import (
     freeze_cmd,
     diff_cmd,
     bundle_cmd,
+    preflight_cmd,
     verify_bundle_cmd,
     run_cmd,
     ps_cmd,
@@ -49,6 +50,7 @@ main.add_command(validate_cmd)
 main.add_command(freeze_cmd)
 main.add_command(diff_cmd)
 main.add_command(bundle_cmd)
+main.add_command(preflight_cmd)
 main.add_command(verify_bundle_cmd)
 main.add_command(run_cmd)
 main.add_command(ps_cmd)

@@ -10,6 +10,8 @@ from expcon.contract.canonical import (
     compute_contract_hash,
     compute_scientific_hash,
     compute_execution_hash,
+    compute_execution_identity_hash_v2,
+    compute_scientific_design_hash_v2,
     contract_identity,
 )
 
@@ -22,5 +24,7 @@ __all__ = [
     "compute_contract_hash",
     "compute_scientific_hash",
     "compute_execution_hash",
+    "compute_execution_identity_hash_v2",
+    "compute_scientific_design_hash_v2",
     "contract_identity",
 ]

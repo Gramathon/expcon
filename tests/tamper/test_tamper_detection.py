@@ -33,6 +33,7 @@ def frozen_exp(tmp_path):
     exp_dir = tmp_path / "experiments" / "e00_v001"
     exp_dir.mkdir(parents=True)
     (exp_dir / "EXPERIMENT.yaml").write_text(yaml.safe_dump(contract), encoding="utf-8")
+    (exp_dir / "run.py").write_text("print('tamper runner')\n", encoding="utf-8")
     freeze_experiment(exp_dir, tmp_path)
     return exp_dir
 

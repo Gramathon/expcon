@@ -25,6 +25,7 @@ from typing import Any, Optional
 
 from expcon.util.env import redact_secrets
 from expcon.backends.kaggle import KaggleApiTransport, KaggleCliTransport, KaggleTransportError
+from expcon.runner.invocation import InvocationError, resolve_invocation
 
 
 class BackendError(Exception):
@@ -53,6 +54,8 @@ class RunContext:
     accelerator: str = "none"
     environment: dict[str, str] = field(default_factory=dict)
     extra_args: list[str] = field(default_factory=list)
+    input_bindings: dict[str, str] = field(default_factory=dict)
+    environment_bindings: dict[str, str] = field(default_factory=dict)
 
 
 class ExecutionBackend:
@@ -163,7 +166,12 @@ class LocalBackend(ExecutionBackend):
         resolved = bundle_path / "resolved_contract.json"
         if resolved.exists():
             contract = json.loads(resolved.read_text(encoding="utf-8"))
-            return contract.get("execution", {}).get("stages", [])
+            execution = contract.get("execution", {})
+            default_invocation = execution.get("invocation")
+            return [
+                {**stage, "_invocation": stage.get("invocation", default_invocation)}
+                for stage in execution.get("stages", [])
+            ]
         return []
 
     def _execute_stage(
@@ -176,7 +184,15 @@ class LocalBackend(ExecutionBackend):
 
         # Find the entrypoint script in the bundle
         runner_dir = bundle_path / "runner"
-        script_path = runner_dir / Path(entrypoint).name
+        entrypoint_path = Path(entrypoint)
+        if entrypoint_path.is_absolute() or ".." in entrypoint_path.parts:
+            return StageResult(
+                stage_id=stage_id,
+                success=False,
+                output="",
+                error=f"Unsafe bundle entrypoint: {entrypoint}",
+            )
+        script_path = runner_dir / entrypoint_path
 
         stage_output_dir = run_dir / "stages" / stage_id
         stage_output_dir.mkdir(parents=True, exist_ok=True)
@@ -188,15 +204,30 @@ class LocalBackend(ExecutionBackend):
                 output="",
                 error=f"Entrypoint not found: {script_path}",
             )
+        try:
+            invocation = resolve_invocation(
+                stage.get("_invocation"), bundle_root=bundle_path, output_root=stage_output_dir,
+                input_bindings=context.input_bindings, environment_bindings=context.environment_bindings,
+            )
+        except InvocationError as exc:
+            return StageResult(stage_id=stage_id, success=False, output="", error=f"Invocation resolution failed: {exc}")
+        (stage_output_dir / "invocation.json").write_text(
+            json.dumps(invocation.attestation, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
 
         try:
+            source_root = bundle_path / "source"
+            runtime_environment = {**self._clean_env(), **invocation.environment}
+            if source_root.is_dir():
+                # Always prefer the immutable bundled closure to the host checkout.
+                runtime_environment["PYTHONPATH"] = str(source_root)
             result = subprocess.run(
-                [sys.executable, str(script_path), "--bundle-root", str(bundle_path), "--output-root", str(stage_output_dir)],
+                [sys.executable, str(script_path), *invocation.argv],
                 capture_output=True,
                 text=True,
                 cwd=str(bundle_path),
                 timeout=300,
-                env=self._clean_env(),
+                env=runtime_environment,
             )
             return StageResult(
                 stage_id=stage_id,
@@ -327,6 +358,7 @@ class KaggleBackend(ExecutionBackend):
                 shutil.copytree(item, kaggle_work / item.name, dirs_exist_ok=True)
             else:
                 shutil.copy2(item, kaggle_work / item.name)
+        plan = self._execution_plan(bundle_path, context)
 
         # Write kernel metadata
         kernel_ref = context.kernel or f"{os.environ.get('KAGGLE_USERNAME', 'user')}/{run_id}"
@@ -355,7 +387,7 @@ class KaggleBackend(ExecutionBackend):
         kernel_script = kaggle_work / "runner" / "kernel.py"
         kernel_script.parent.mkdir(exist_ok=True)
         kernel_script.write_text(
-            self._generate_kernel_script(context), encoding="utf-8"
+            self._generate_kernel_script(context, plan), encoding="utf-8"
         )
 
         # Submit via Kaggle CLI (if available)
@@ -397,7 +429,26 @@ class KaggleBackend(ExecutionBackend):
                        "sources": {"datasets": metadata["dataset_sources"], "competitions": metadata["competition_sources"],
                                    "kernels": metadata["kernel_sources"], "models": metadata["model_sources"]}}})
 
-    def _generate_kernel_script(self, context: RunContext) -> str:
+    def _execution_plan(self, bundle: Path, context: RunContext) -> list[dict[str, Any]]:
+        """Resolve the same frozen stage protocol used by the local backend."""
+        contract = json.loads((bundle / "resolved_contract.json").read_text(encoding="utf-8"))
+        plan = []
+        for stage in contract.get("execution", {}).get("stages", []):
+            entrypoint = Path(stage["entrypoint"])
+            if entrypoint.is_absolute() or ".." in entrypoint.parts:
+                raise BackendError(f"Unsafe bundle entrypoint: {stage['entrypoint']}")
+            invocation = resolve_invocation(
+                stage.get("invocation", contract.get("execution", {}).get("invocation")),
+                bundle_root=bundle,
+                output_root=bundle / "candidate-output" / stage["id"],
+                input_bindings=context.input_bindings,
+                environment_bindings=context.environment_bindings,
+            )
+            plan.append({"id": stage["id"], "entrypoint": str(Path("runner") / entrypoint), "argv": invocation.argv,
+                         "environment": invocation.environment, "attestation": invocation.attestation})
+        return plan
+
+    def _generate_kernel_script(self, context: RunContext, plan: list[dict[str, Any]]) -> str:
         return f'''#!/usr/bin/env python3
 """Auto-generated Kaggle kernel runner for {context.experiment_id}/{context.version}."""
 import json
@@ -419,23 +470,28 @@ results = {{
     "outputs": [],
 }}
 
+plan = {json.dumps(plan, sort_keys=True)}
+
 # Try to run declared stages
-runner_dir = bundle_root / "runner"
-if runner_dir.exists():
-    for script in sorted(runner_dir.glob("*.py")):
-        try:
-            proc = subprocess.run(
-                [sys.executable, str(script), "--bundle-root", str(bundle_root), "--output-root", str(output_root)],
-                capture_output=True, text=True, timeout=600, cwd=str(bundle_root)
-            )
-            results["outputs"].append({{
-                "stage": script.name,
+for stage in plan:
+    try:
+        script = bundle_root / stage["entrypoint"]
+        if not script.is_file(): raise RuntimeError(f"Entrypoint missing: {{script}}")
+        env = {{**os.environ, **stage["environment"]}}
+        source = bundle_root / "source"
+        if source.is_dir(): env["PYTHONPATH"] = str(source)
+        proc = subprocess.run(
+            [sys.executable, str(script), *stage["argv"]], capture_output=True,
+            text=True, timeout=600, cwd=str(bundle_root), env=env
+        )
+        results["outputs"].append({{
+                "stage": stage["id"],
                 "success": proc.returncode == 0,
                 "stdout": proc.stdout[-5000:] if proc.stdout else "",
                 "stderr": proc.stderr[-5000:] if proc.stderr else "",
-            }})
-        except Exception as exc:
-            results["outputs"].append({{"stage": script.name, "success": False, "error": str(exc)}})
+        }})
+    except Exception as exc:
+        results["outputs"].append({{"stage": stage["id"], "success": False, "error": str(exc)}})
 
 # Write results
 (output_root / "kaggle_results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")

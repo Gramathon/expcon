@@ -24,7 +24,7 @@ def minimal_project(tmp_path):
         "execution": {
             "allowed_backends": ["local"],
             "accelerator": {"type": "none"},
-            "stages": [{"id": "main", "entrypoint": "run.py", "requires": []}],
+            "stages": [{"id": "main", "entrypoint": "scripts/run.py", "requires": []}],
         },
         "environment": {"python": "3.10", "dependency_lock": "uv.lock"},
         "evaluation": {"primary_metric": "accuracy", "threshold": 0.5},

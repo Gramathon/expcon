@@ -36,6 +36,7 @@ def test_api_capabilities_and_exact_kernel_identity_are_persisted(tmp_path):
     backend = KaggleBackend(tmp_path, api=api, cli=_Cli())
     bundle = tmp_path / "bundle"
     bundle.mkdir()
+    (bundle / "resolved_contract.json").write_text(json.dumps({"execution": {"stages": []}}), encoding="utf-8")
     context = RunContext("E19", "v001", "bundle-sha", "contract-sha", run_id="run-e19", kernel="owner/e19-v001")
     backend.submit(bundle, context)
     record = json.loads((tmp_path / ".expcon" / "runs" / "run-e19" / "kaggle.json").read_text())

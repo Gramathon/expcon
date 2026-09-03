@@ -512,6 +512,9 @@ def inspect_cmd(experiment, as_json):
         "contract_hash": identity["contract_hash"],
         "scientific_hash": identity["scientific_hash"],
         "execution_hash": identity["execution_hash"],
+        "scientific_identity_algorithm": identity["scientific_identity_algorithm"],
+        "scientific_design_hash": identity["scientific_design_hash"],
+        "execution_identity_algorithm": identity["execution_identity_algorithm"],
         "hypothesis": contract.hypothesis,
         "stages": contract.get("execution", "stages", default=[]),
         "required_outputs": contract.get("outputs", "required", default=[]),
@@ -620,6 +623,28 @@ def bundle_cmd(experiment, as_json):
         sys.exit(1)
 
 
+@click.command(name="preflight")
+@click.argument("experiment")
+@click.option("--input", "input_bindings", multiple=True, metavar="NAME=PATH", help="Named candidate input binding")
+@click.option("--env", "environment_bindings", multiple=True, metavar="NAME=VALUE", help="Named candidate environment binding")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def preflight_cmd(experiment, input_bindings, environment_bindings, as_json):
+    """Build and verify an ephemeral candidate bundle without execution."""
+    exp_path = _resolve_experiment(experiment)
+    try:
+        validate_experiment(exp_path)
+        result = BundleBuilder(exp_path).preflight(
+            input_bindings=_parse_named_bindings(input_bindings, "input"),
+            environment_bindings=_parse_named_bindings(environment_bindings, "environment"),
+        )
+        _output(result, as_json)
+        if result["status"] != "PASS":
+            sys.exit(1)
+    except Exception as exc:
+        _output({"status": "ERROR", "error": str(exc)}, as_json)
+        sys.exit(1)
+
+
 # ─── verify-bundle ───────────────────────────────────────────────────────────
 
 @click.command(name="verify-bundle")
@@ -645,8 +670,10 @@ def verify_bundle_cmd(bundle, as_json):
 @click.option("--backend", default="local", help="Execution backend")
 @click.option("--kernel", default=None, help="Kaggle kernel name")
 @click.option("--accelerator", default="none", help="Accelerator type")
+@click.option("--input", "input_bindings", multiple=True, metavar="NAME=PATH", help="Named runtime input binding")
+@click.option("--env", "environment_bindings", multiple=True, metavar="NAME=VALUE", help="Named runtime environment binding")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
-def run_cmd(experiment, backend, kernel, accelerator, as_json):
+def run_cmd(experiment, backend, kernel, accelerator, input_bindings, environment_bindings, as_json):
     """Run an experiment on a specified backend."""
     exp_path = _resolve_experiment(experiment)
     workspace_root = find_workspace_root(exp_path.parent)
@@ -719,6 +746,8 @@ def run_cmd(experiment, backend, kernel, accelerator, as_json):
         kernel=kernel,
         accelerator=accelerator,
         environment={"requirements": contract.get("execution", "requirements", default={})},
+        input_bindings=_parse_named_bindings(input_bindings, "input"),
+        environment_bindings=_parse_named_bindings(environment_bindings, "environment"),
     )
 
     # Transition states through the state machine
@@ -760,6 +789,19 @@ def lifecycle_run_state_from_run(run_id: str, state_name: str):
     from expcon.lifecycle.state import RunState
 
     return RunState(state_name)
+
+
+def _parse_named_bindings(values, label: str) -> dict[str, str]:
+    """Parse deterministic NAME=VALUE runtime bindings without shell expansion."""
+    result: dict[str, str] = {}
+    for item in values:
+        if "=" not in item:
+            raise click.BadParameter(f"{label} binding must use NAME=VALUE")
+        name, value = item.split("=", 1)
+        if not name or not value or name in result:
+            raise click.BadParameter(f"invalid or duplicate {label} binding: {item!r}")
+        result[name] = value
+    return result
 
 
 # ─── ps ──────────────────────────────────────────────────────────────────────

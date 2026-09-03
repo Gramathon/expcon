@@ -15,6 +15,7 @@ src/expcon/artifacts/artifact.py
 src/expcon/backends/__init__.py
 src/expcon/backends/colab.py
 src/expcon/backends/kaggle.py
+src/expcon/backends/tinker.py
 src/expcon/bundle/__init__.py
 src/expcon/bundle/bundle.py
 src/expcon/cli/__init__.py
@@ -38,6 +39,14 @@ src/expcon/resources/schemas/experiment-v1.json
 src/expcon/resources/schemas/frozen-contract-v1.json
 src/expcon/resources/schemas/run-v1.json
 src/expcon/resources/skills/experiment-contract/SKILL.md
+src/expcon/resources/skills/experiment-contract/references/artifacts-and-evidence.md
+src/expcon/resources/skills/experiment-contract/references/backends.md
+src/expcon/resources/skills/experiment-contract/references/colab.md
+src/expcon/resources/skills/experiment-contract/references/kaggle.md
+src/expcon/resources/skills/experiment-contract/references/lifecycle.md
+src/expcon/resources/skills/experiment-contract/references/local.md
+src/expcon/resources/skills/experiment-contract/references/scientific-vs-operational.md
+src/expcon/resources/skills/experiment-contract/references/tinker.md
 src/expcon/resources/templates/AGENTS.fragment.md
 src/expcon/resources/templates/CHALLENGE.yaml
 src/expcon/resources/templates/EXPERIMENT.yaml

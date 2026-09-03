@@ -58,6 +58,8 @@ class RunContext:
     accelerator: str = "none"
     environment: dict[str, str] = field(default_factory=dict)
     extra_args: list[str] = field(default_factory=list)
+    input_bindings: dict[str, str] = field(default_factory=dict)
+    environment_bindings: dict[str, str] = field(default_factory=dict)
 
 
 class StageRunner:

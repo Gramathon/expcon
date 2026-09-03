@@ -17,7 +17,7 @@ def minimal_experiment(tmp_path):
         "schema_version": 1,
         "experiment": {"id": "E00", "version": "v001", "title": "Test"},
         "hypothesis": {"statement": "Test hypothesis"},
-        "source": {"repository": ".", "dirty_tree_allowed": False},
+        "source": {"repository": str(tmp_path), "dirty_tree_allowed": False},
         "execution": {
             "allowed_backends": ["local"],
             "accelerator": {"type": "none"},
@@ -32,6 +32,7 @@ def minimal_experiment(tmp_path):
     exp_dir = tmp_path / "experiments" / "e00_v001"
     exp_dir.mkdir(parents=True)
     (exp_dir / "EXPERIMENT.yaml").write_text(yaml.safe_dump(contract), encoding="utf-8")
+    (exp_dir / "run.py").write_text("print('freeze/diff test runner')\n", encoding="utf-8")
     return exp_dir, contract
 
 
@@ -101,12 +102,23 @@ class TestDiff:
     def test_diff_detects_source_change(self, minimal_experiment):
         exp_dir, _ = minimal_experiment
         freeze_experiment(exp_dir, exp_dir.parent.parent)
-        # Add a file to scripts/ inside the experiment directory
-        scripts_dir = exp_dir / "scripts"
+        # Add a repository source file covered by the frozen source manifest.
+        scripts_dir = exp_dir.parent.parent / "scripts"
         scripts_dir.mkdir(exist_ok=True)
         (scripts_dir / "new_file.py").write_text("# new", encoding="utf-8")
         result = diff_experiment(exp_dir)
         assert result["divergence_detected"]
+
+    def test_diff_detects_frozen_invocation_change(self, minimal_experiment):
+        exp_dir, contract = minimal_experiment
+        contract["execution"]["invocation"] = {"argv": ["--output", "${outputs.root}"]}
+        (exp_dir / "EXPERIMENT.yaml").write_text(yaml.safe_dump(contract), encoding="utf-8")
+        freeze_experiment(exp_dir, exp_dir.parent.parent)
+        contract["execution"]["invocation"]["argv"] = ["--other", "${outputs.root}"]
+        (exp_dir / "EXPERIMENT.yaml").write_text(yaml.safe_dump(contract), encoding="utf-8")
+        result = diff_experiment(exp_dir)
+        assert result["divergence_detected"]
+        assert any(item["field"] == "execution" for item in result["divergences"])
 
     def test_diff_not_frozen(self, minimal_experiment):
         exp_dir, _ = minimal_experiment
