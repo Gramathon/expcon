@@ -306,6 +306,13 @@ candidate's checksum manifest or overwrite it as part of a smoke test.
 | [tools/check_distribution.py](tools/check_distribution.py) | Built archive metadata/resource checks |
 | [AGENTS.md](AGENTS.md) | Experiment-operation guidance for agents |
 
+## Contributing and security
+
+Contribution instructions are in [CONTRIBUTING.md](CONTRIBUTING.md). Community
+participation follows the [Code of Conduct](CODE_OF_CONDUCT.md). Please report
+security vulnerabilities through the private process in [SECURITY.md](SECURITY.md),
+not in a public issue.
+
 ## Licence
 
 [MIT](LICENSE).
