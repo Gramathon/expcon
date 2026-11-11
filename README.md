@@ -10,7 +10,7 @@ evidence and still receive NOT_SUPPORTED or INCONCLUSIVE.
 
 ## Current scope
 
-Local validation covers Python 3.10, 3.11 and 3.12 on Linux. The pre-push suite
+Local validation covers Python 3.10, 3.11 and 3.12. The pre-push suite
 passed 268 tests on each interpreter. Other platforms and interpreter versions
 have not been validated. Local execution and persistence use POSIX conventions.
 
