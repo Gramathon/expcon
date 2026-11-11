@@ -49,6 +49,35 @@ execution uses the workspace `.venv/bin/python`, with runtime preflight checks
 for the declared lock identity, Python requirement and direct dependencies.
 Installing Expcon alone does not install a model's dependencies.
 
+## Use Expcon with an AI agent
+
+Expcon includes an `experiment-contract` skill: operating instructions and
+backend/reference guides for an AI agent. After installing Expcon, inspect and
+install the skill into an existing agent skills directory:
+
+```bash
+expcon skill status --json
+expcon skill path
+expcon skill install --target /path/to/agent/skills
+expcon skill status --target /path/to/agent/skills --json
+```
+
+For Codex, `expcon skill install` without `--target` uses `$CODEX_HOME/skills`
+when `CODEX_HOME` is set. Installation copies the skill instructions and their
+reference files. It does not connect the agent to a repository, grant filesystem
+or provider permissions, install experiment dependencies, or start compute. The
+agent still needs access to the experiment workspace and must be authorised for
+any selected backend. The project-level [AGENTS.md](AGENTS.md) gives the operating
+procedure; use it together with the installed skill.
+
+The intended division of work is: the agent reads and helps author a draft, while
+Expcon validates and freezes the declared contract, controls the supported
+execution path, checks identities and evidence, and evaluates the frozen
+acceptance rules. Hashes establish identity and detect changes within the declared
+scope; they do not prove that measurements are scientifically correct, capture
+undeclared inputs, or make experiment code safe to run. A completed run can still
+be `NOT_SUPPORTED` or `INCONCLUSIVE`.
+
 ## Run the complete CPU validation workflow
 
 This is the executable introduction to the framework. It generates a small
@@ -129,6 +158,24 @@ scientific specification. Before freezing, provide:
 - Dataset/model input bindings and expected content hashes where required.
 - Workload parameters, split, seeds, output files and metric definitions.
 - Explicit acceptance rules if a scientific verdict is required.
+
+For a human or agent, the normal sequence is:
+
+1. Initialise the project once with `expcon init` from its workspace.
+2. Create a versioned experiment scaffold with `expcon init --name ...`.
+3. Add the real workload, data/model identities, environment, metrics and frozen
+   acceptance rules. Review them as a scientific specification.
+4. Run `expcon inspect` and `expcon validate`; resolve validation errors before
+   freezing.
+5. Freeze the contract, then use `expcon diff`, `bundle` and `verify-bundle`
+   before running on an allowed backend.
+6. Fetch and verify the resulting evidence before adjudicating it. If the frozen
+   experiment needs a scientific change, propose a successor version with the
+   deviation recorded.
+
+The agent skill and [AGENTS.md](AGENTS.md) explain which work an agent may do
+before and after freeze. The skill supplies instructions; the installed Expcon
+CLI performs the deterministic checks.
 
 A numeric acceptance-rule excerpt:
 
