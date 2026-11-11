@@ -1,0 +1,53 @@
+name: CI
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  UV_NO_PROGRESS: "1"
+jobs:
+  validate:
+    name: Python ${{ matrix.python }} validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.12.5"
+          enable-cache: false
+      - name: Install locked environment and check consistency
+        run: |
+          uv sync --locked --group dev
+          uv pip check
+      - name: Static quality (full lint/types; documented format scope)
+        run: uv run --no-sync python -B tools/check_quality.py
+      - name: Full suite including required integrity, adjudication and fake backends
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/reports/.coverage
+        run: |
+          mkdir -p "$RUNNER_TEMP/reports"
+          uv run --no-sync python -B -m pytest -p no:cacheprovider --basetemp="$RUNNER_TEMP/pytest" --junitxml="$RUNNER_TEMP/reports/junit.xml" --cov=src/expcon --cov-branch --cov-report=json:"$RUNNER_TEMP/reports/coverage.json" --cov-report=xml:"$RUNNER_TEMP/reports/coverage.xml" --cov-report=term-missing
+      - name: Upload allowlisted diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: validation-${{ matrix.python }}
+          path: ${{ runner.temp }}/reports/*
+          retention-days: 7
+          if-no-files-found: warn

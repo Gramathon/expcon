@@ -1,7 +1,6 @@
 """Adversarial tamper detection tests."""
 
 import json
-from pathlib import Path
 
 import pytest
 import yaml
@@ -33,6 +32,7 @@ def frozen_exp(tmp_path):
     exp_dir = tmp_path / "experiments" / "e00_v001"
     exp_dir.mkdir(parents=True)
     (exp_dir / "EXPERIMENT.yaml").write_text(yaml.safe_dump(contract), encoding="utf-8")
+    (exp_dir / "run.py").write_text("print('tamper runner')\n", encoding="utf-8")
     freeze_experiment(exp_dir, tmp_path)
     return exp_dir
 
@@ -77,6 +77,7 @@ class TestBundleTampering:
     def test_byte_tampering_detected(self, frozen_exp):
         builder = BundleBuilder(frozen_exp)
         bundle_path, _ = builder.build()
+        assert BundleVerifier(bundle_path).verify()["status"] == "PASS"
         manifest = json.loads((bundle_path / "bundle_manifest.json").read_text())
         first_file = manifest["files"][0]
         file_path = bundle_path / first_file["relative_path"]
@@ -90,6 +91,7 @@ class TestBundleTampering:
     def test_manifest_tampering_detected(self, frozen_exp):
         builder = BundleBuilder(frozen_exp)
         bundle_path, _ = builder.build()
+        assert BundleVerifier(bundle_path).verify()["status"] == "PASS"
         manifest_path = bundle_path / "bundle_manifest.json"
         manifest = json.loads(manifest_path.read_text())
         manifest["bundle_id"] = "0" * 64
@@ -104,7 +106,7 @@ class TestBundleTampering:
 class TestEvidenceTampering:
     """Tampering with evidence must be detected."""
 
-    def test_modified_metrics_detected(self, tmp_path):
+    def test_missing_manifest_fails_before_metrics_check(self, tmp_path):
         from expcon.evidence.evidence import EvidenceVerifier
 
         evidence_dir = tmp_path / "evidence"
@@ -121,13 +123,16 @@ class TestEvidenceTampering:
         verifier = EvidenceVerifier(evidence_dir)
         result = verifier.verify()
         assert result["status"] == "FAIL"
+        assert any("evidence_manifest.json" in error for error in result["errors"])
+        # Actual metrics mutation is covered from a complete valid baseline in
+        # tests/recovery/test_integrity.py::test_complete_inventory_is_checked.
 
 
 class TestPathTraversal:
     """Archive path traversal must be prevented."""
 
     def test_path_traversal_blocked(self, tmp_path):
-        from expcon.util.path import safe_extract_zip, is_path_safe
+        from expcon.util.path import safe_extract_zip
 
         # Create a malicious zip with path traversal
         import zipfile

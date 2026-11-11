@@ -10,8 +10,6 @@ from expcon.runner.backends import (
     LocalBackend,
     KaggleBackend,
     RunContext,
-    RunStatus,
-    BackendError,
 )
 from expcon.runner.runner import StageRunner
 
@@ -62,7 +60,7 @@ class TestLocalBackend:
     def test_local_backend_cancel(self, tmp_path):
         backend = LocalBackend(tmp_path)
         result = backend.cancel("nonexistent")
-        assert result is True
+        assert result is False  # No process handle: do not claim cancellation.
 
 
 class TestKaggleBackend:
@@ -83,10 +81,8 @@ class TestKaggleBackend:
         manifest = bundle_dir / "bundle_manifest.json"
         manifest.write_text(json.dumps({"bundle_id": "bundle123", "files": []}), encoding="utf-8")
 
-        run_id = backend.submit(bundle_dir, context)
-        assert "kaggle" in run_id
-        status = backend.status(run_id)
-        assert status.state in ("running", "completed", "failed", "pending")
+        with pytest.raises(Exception, match="BACKEND_CAPABILITY_MISMATCH"):
+            backend.submit(bundle_dir, context)
 
 
 class TestStageRunner:

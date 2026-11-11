@@ -1,7 +1,5 @@
 """Integration tests for lifecycle transitions."""
 
-import json
-from pathlib import Path
 
 import pytest
 import yaml
@@ -9,7 +7,6 @@ import yaml
 from expcon.contract.operations import freeze_experiment
 from expcon.lifecycle.experiment_state import ExperimentLifecycle
 from expcon.lifecycle.state import ExperimentState, RunState, StateError
-from expcon.contract.contract import load_contract
 
 
 @pytest.fixture
@@ -33,6 +30,7 @@ def exp_with_lifecycle(tmp_path):
     exp_dir = tmp_path / "experiments" / "e00_v001"
     exp_dir.mkdir(parents=True)
     (exp_dir / "EXPERIMENT.yaml").write_text(yaml.safe_dump(contract), encoding="utf-8")
+    (exp_dir / "run.py").write_text("print('lifecycle runner')\n", encoding="utf-8")
     return exp_dir, ExperimentLifecycle(tmp_path)
 
 

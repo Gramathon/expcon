@@ -1,0 +1,58 @@
+name: Research integrity
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  UV_NO_PROGRESS: "1"
+jobs:
+  cpu-study:
+    name: CPU research integrity ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.12.5"
+          enable-cache: false
+      - name: Install locked CPU control environment
+        run: uv sync --locked --group dev
+      - name: Actual model, positive/negative outcomes, corruption and replay
+        run: |
+          mkdir -p "$RUNNER_TEMP/research"
+          uv run --no-sync python -B tools/validation/run_study.py --output-root "$RUNNER_TEMP/research/studies" > "$RUNNER_TEMP/research/summary.json"
+          uv run --no-sync python -B tools/validation/independent_check.py "$RUNNER_TEMP"/research/studies/*/validation.json "$RUNNER_TEMP/research/independent.json"
+      - name: Preserve disposable study evidence (no environments or credentials)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cpu-study-${{ matrix.python }}
+          path: |
+            ${{ runner.temp }}/research/summary.json
+            ${{ runner.temp }}/research/independent.json
+            ${{ runner.temp }}/research/studies/*/validation.json
+            ${{ runner.temp }}/research/studies/*/protocol.json
+            ${{ runner.temp }}/research/studies/*/scripts/
+            ${{ runner.temp }}/research/studies/*/data/
+            ${{ runner.temp }}/research/studies/*/experiments/
+            ${{ runner.temp }}/research/studies/*/.expcon/
+            ${{ runner.temp }}/research/studies/*/controlled_tamper_copy/
+          include-hidden-files: true
+          retention-days: 3
+          if-no-files-found: warn

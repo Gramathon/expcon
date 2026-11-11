@@ -6,6 +6,7 @@ backend.  Expcon runs the frozen local driver; that driver owns documented
 """
 from __future__ import annotations
 
+import importlib
 import importlib.metadata
 import json
 import os
@@ -46,11 +47,10 @@ class TinkerSdkTransport:
     """Small public-SDK transport; no credentials or internal SDK state persist."""
 
     def __init__(self, sdk: Any | None = None):
-        self.sdk = sdk
+        self.sdk: Any = sdk
         if sdk is None:
             try:
-                import tinker as imported_sdk
-                self.sdk = imported_sdk
+                self.sdk = importlib.import_module("tinker")
             except ImportError:
                 self.sdk = None
 

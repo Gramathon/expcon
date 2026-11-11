@@ -11,13 +11,17 @@ A negative result is not an execution failure.
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
-from expcon.lifecycle.state import ExperimentState, RunState
+from expcon.lifecycle.state import RunState
+from expcon.contract.canonical import compute_contract_hash
+from expcon.adjudication.acceptance import evaluate_acceptance
+from expcon.evidence.collection import locate_evidence
 
 
 class ScientificVerdict(str, Enum):
@@ -85,7 +89,7 @@ class Adjudicator:
     def __init__(self, workspace_root: Path | str):
         self.workspace_root = Path(workspace_root).resolve()
 
-    def adjudicate(self, run_id: str) -> AdjudicationResult:
+    def adjudicate(self, run_id: str, *, evidence_dir: Path | None = None) -> AdjudicationResult:
         """Adjudicate a run based on its evidence and execution status."""
         from expcon.lifecycle.experiment_state import ExperimentLifecycle
 
@@ -93,7 +97,8 @@ class Adjudicator:
         run = lifecycle.load_run(run_id)
 
         # Determine execution status from run state
-        if run.state in (RunState.COMPLETED, RunState.EVIDENCE_VERIFIED):
+        if run.state in (RunState.RESULTS_AVAILABLE, RunState.EVIDENCE_FETCHED,
+                         RunState.EVIDENCE_VERIFIED, RunState.ADJUDICATED):
             exec_status = ExecutionStatus.COMPLETED
         elif run.state in (RunState.FAILED_EXECUTION, RunState.INVALID_RUN):
             exec_status = ExecutionStatus.FAILED
@@ -101,14 +106,20 @@ class Adjudicator:
             exec_status = ExecutionStatus.BLOCKED
         else:
             exec_status = ExecutionStatus.UNKNOWN
+        # Evidence invalidation is independent of whether the process completed.
+        results_file = lifecycle.run_dir(run_id) / "results.json"
+        if exec_status == ExecutionStatus.UNKNOWN and results_file.is_file():
+            try:
+                success = json.loads(results_file.read_text()).get("success")
+                if success is True:
+                    exec_status = ExecutionStatus.COMPLETED
+                elif success is False:
+                    exec_status = ExecutionStatus.FAILED
+            except (OSError, ValueError, AttributeError):
+                pass  # Missing/invalid operational facts remain UNKNOWN.
 
         # Verify evidence - check both runs/ and fetched/ directories
-        evidence_dir = self.workspace_root / ".expcon" / "runs" / run_id / "evidence"
-        if not evidence_dir.exists():
-            fetched_dir = self.workspace_root / ".expcon" / "fetched" / run_id
-            evidence_dir = fetched_dir / "evidence"
-            if not evidence_dir.exists():
-                evidence_dir = fetched_dir
+        evidence_dir = evidence_dir or locate_evidence(self.workspace_root, run)
         evidence_valid = False
         evidence_status = EvidenceStatus.UNKNOWN
 
@@ -116,14 +127,16 @@ class Adjudicator:
             from expcon.evidence.evidence import EvidenceVerifier
 
             # Find bundle path
-            bundle_path = None
+            bundle_path: Path | None = lifecycle.run_dir(run_id) / "bundle"
+            if bundle_path is not None and not bundle_path.is_dir():
+                bundle_path = None
             exp_dir = self._find_experiment_dir(run.experiment_id, run.version)
-            if exp_dir:
+            if exp_dir and bundle_path is None:
                 bundle_dir = exp_dir / "bundle"
                 if bundle_dir.exists():
                     bundle_path = bundle_dir
 
-            verification = EvidenceVerifier(evidence_dir, bundle_path).verify()
+            verification = EvidenceVerifier(evidence_dir, bundle_path, expected_run=run).verify()
             evidence_valid = verification["verified"]
             evidence_status = EvidenceStatus.VERIFIED if evidence_valid else EvidenceStatus.INVALID
         else:
@@ -134,7 +147,10 @@ class Adjudicator:
         contract_status = ContractStatus.COMPLIANT if contract_valid else ContractStatus.VIOLATION
 
         # Determine scientific verdict
-        scientific_verdict = self._determine_scientific_verdict(run, evidence_dir, evidence_valid)
+        scientific_verdict = self._determine_scientific_verdict(
+            run, evidence_dir,
+            evidence_valid and contract_valid and exec_status == ExecutionStatus.COMPLETED,
+        )
 
         result = AdjudicationResult(
             run_id=run_id,
@@ -153,37 +169,54 @@ class Adjudicator:
                 "accelerator": run.accelerator,
                 "contract_hash": run.contract_hash,
                 "bundle_id": run.bundle_id,
+                "candidate_evidence": str(evidence_dir),
             },
             adjudicated_at=datetime.now(timezone.utc).isoformat(),
         )
 
         # Persist adjudication
-        adj_file = self.workspace_root / ".expcon" / "runs" / run_id / "adjudication.json"
+        adj_file = (self.workspace_root / ".expcon" / "runs" / run_id /
+                    "adjudications" / f"{uuid.uuid4().hex}.json")
         adj_file.parent.mkdir(parents=True, exist_ok=True)
         adj_file.write_text(
             json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
 
         # Update run state
-        if evidence_valid and exec_status == ExecutionStatus.COMPLETED.value:
+        if evidence_valid and contract_valid and exec_status == ExecutionStatus.COMPLETED and run.state == RunState.EVIDENCE_VERIFIED:
             lifecycle.update_run_state(run_id, RunState.ADJUDICATED, reason="Adjudication complete")
 
         return result
 
     def _check_contract_compliance(self, run) -> bool:
         """Check whether the run used the correct contract."""
-        # Verify contract hash matches
-        if not run.contract_hash:
-            return False
+        return self._trusted_contract(run) is not None
 
-        # Check if contract was tampered with
+    def _trusted_contract(self, run) -> dict[str, Any] | None:
+        """Retained lock and immutable snapshot must agree with expected run identity."""
+        retained = run.metadata.get("frozen_contract")
+        retained_lock = run.metadata.get("frozen_lock", {})
+        if retained is not None:
+            identity = retained.get("experiment", {})
+            if (compute_contract_hash(retained) == run.contract_hash
+                    and retained_lock.get("contract_hash") == run.contract_hash
+                    and identity.get("id") == run.experiment_id and identity.get("version") == run.version):
+                return retained
+            return None
         experiment_dir = self._find_experiment_dir(run.experiment_id, run.version)
-        if experiment_dir:
-            lock_path = experiment_dir / "contract.lock.json"
-            if lock_path.exists():
-                lock = json.loads(lock_path.read_text(encoding="utf-8"))
-                return lock.get("contract_hash") == run.contract_hash
-        return True
+        if experiment_dir is None or not run.contract_hash:
+            return None
+        try:
+            lock = json.loads((experiment_dir / "contract.lock.json").read_text())
+            contract = json.loads((experiment_dir / "bundle" / "resolved_contract.json").read_text())
+            if lock.get("contract_hash") != run.contract_hash or compute_contract_hash(contract) != run.contract_hash:
+                return None
+            identity = contract.get("experiment", {})
+            if identity.get("id") != run.experiment_id or identity.get("version") != run.version:
+                return None
+            return contract
+        except (OSError, ValueError, TypeError):
+            return None
 
     def _determine_scientific_verdict(
         self,
@@ -195,66 +228,34 @@ class Adjudicator:
         if not evidence_valid:
             return ScientificVerdict.INCONCLUSIVE
 
-        # Look for metrics
-        metrics_file = evidence_dir / "metrics" / "metrics.json"
-        if metrics_file.exists():
-            metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
-            return self._evaluate_metrics(metrics, run)
-
-        # Look for aggregate results
-        for results_file in evidence_dir.rglob("*_AGGREGATE_RESULT.json"):
-            results = json.loads(results_file.read_text(encoding="utf-8"))
-            return self._evaluate_aggregate(results, run)
-
-        return ScientificVerdict.INCONCLUSIVE
-
-    def _evaluate_metrics(self, metrics: dict[str, Any], run) -> ScientificVerdict:
-        """Evaluate metrics against acceptance criteria."""
-        # Check for acceptance criteria in the contract
-        threshold = metrics.get("threshold")
-        primary_metric = metrics.get("primary_metric_value")
-
-        if threshold is not None and primary_metric is not None:
-            if primary_metric >= threshold:
-                return ScientificVerdict.SUPPORTED
-            else:
-                return ScientificVerdict.NOT_SUPPORTED
-
-        # Check for verdict field
-        verdict = metrics.get("verdict")
-        if verdict == "SUPPORTED":
-            return ScientificVerdict.SUPPORTED
-        if verdict == "NOT_SUPPORTED":
-            return ScientificVerdict.NOT_SUPPORTED
-
-        return ScientificVerdict.INCONCLUSIVE
-
-    def _evaluate_aggregate(self, results: dict[str, Any], run) -> ScientificVerdict:
-        """Evaluate aggregate results for E13-style experiments."""
-        # E13-style: look for overall verdict
-        overall = results.get("overall_e13", "")
-        if "SUPPORTED" in str(overall):
-            return ScientificVerdict.SUPPORTED
-        if "NOT_SUPPORTED" in str(overall):
-            return ScientificVerdict.NOT_SUPPORTED
-        if "WAITING" in str(overall):
+        # Only the frozen declared observation source is scientific authority.
+        # Directory scanning must not choose a convenient aggregate/verdict file.
+        from expcon.util.path import contained_path
+        contract = self._trusted_contract(run)
+        if contract is None:
+            return ScientificVerdict.INCONCLUSIVE
+        try:
+            relative = contract.get("evaluation", {}).get("metrics_file", "metrics.json")
+            path = contained_path(evidence_dir / "outputs", relative)
+            if not path.is_file():
+                return ScientificVerdict.INCONCLUSIVE
+            observations = json.loads(path.read_text())
+            if not isinstance(observations, dict):
+                return ScientificVerdict.INCONCLUSIVE
+            return self._evaluate_metrics(observations, run)
+        except (OSError, ValueError, TypeError):
             return ScientificVerdict.INCONCLUSIVE
 
-        # Check by_space verdicts
-        by_space = results.get("by_space", {})
-        for space_name, space_data in by_space.items():
-            verdict = space_data.get("verdict", "")
-            if "NOT_SUPPORTED" in str(verdict):
-                return ScientificVerdict.NOT_SUPPORTED
+    def _evaluate_metrics(self, metrics: dict[str, Any], run) -> ScientificVerdict:
+        contract = self._trusted_contract(run)
+        if contract is None:
+            return ScientificVerdict.INCONCLUSIVE
+        rule = contract.get("evaluation", {}).get("acceptance")
+        return ScientificVerdict(evaluate_acceptance(rule, metrics))
 
-        # If all spaces are SUPPORTED
-        all_supported = all(
-            "SUPPORTED" in str(v.get("verdict", "")) for v in by_space.values()
-        )
-        if all_supported and by_space:
-            return ScientificVerdict.SUPPORTED
-
-        return ScientificVerdict.INCONCLUSIVE
+    def _evaluate_aggregate(self, results: dict[str, Any], run) -> ScientificVerdict:
+        # Aggregate verdict strings are observations, never independent authority.
+        return self._evaluate_metrics(results, run)
 
     def _find_experiment_dir(self, experiment_id: str, version: str) -> Optional[Path]:
         """Find the experiment directory for a given ID and version."""

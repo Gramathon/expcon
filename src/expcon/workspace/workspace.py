@@ -8,11 +8,11 @@ disappears, Expcon reconstructs state from persistent run records.
 from __future__ import annotations
 
 import json
-import os
 import shutil
+import shlex
 import subprocess
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 class WorkspaceError(Exception):
@@ -74,7 +74,7 @@ class WorkspaceManager:
 
         # Pane 1: events --follow (top-left)
         subprocess.run(
-            ["tmux", "send-keys", "-t", f"{session_name}:0.0", f"cd {self.workspace_root}", "Enter"],
+            ["tmux", "send-keys", "-t", f"{session_name}:0.0", f"cd {shlex.quote(str(self.workspace_root))}", "Enter"],
             capture_output=True,
         )
         subprocess.run(
@@ -88,7 +88,7 @@ class WorkspaceManager:
             capture_output=True,
         )
         subprocess.run(
-            ["tmux", "send-keys", "-t", f"{session_name}:0.0", f"cd {self.workspace_root}", "Enter"],
+            ["tmux", "send-keys", "-t", f"{session_name}:0.0", f"cd {shlex.quote(str(self.workspace_root))}", "Enter"],
             capture_output=True,
         )
         subprocess.run(
@@ -102,7 +102,7 @@ class WorkspaceManager:
             capture_output=True,
         )
         subprocess.run(
-            ["tmux", "send-keys", "-t", f"{session_name}:0.1", f"cd {self.workspace_root}", "Enter"],
+            ["tmux", "send-keys", "-t", f"{session_name}:0.1", f"cd {shlex.quote(str(self.workspace_root))}", "Enter"],
             capture_output=True,
         )
 

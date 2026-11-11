@@ -4,7 +4,27 @@ from __future__ import annotations
 
 import os
 import zipfile
+import re
 from pathlib import Path
+
+
+def safe_identifier(value: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", value):
+        raise ValueError("UNSAFE_IDENTIFIER")
+    return value
+
+
+def contained_path(base: Path, value: str) -> Path:
+    """Validate untrusted portable relative paths before filesystem access."""
+    if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
+        raise ValueError("UNSAFE_PATH")
+    relative = Path(value)
+    if relative.is_absolute() or any(part in {"", ".", ".."} for part in value.split("/")):
+        raise ValueError(f"UNSAFE_PATH: {value!r}")
+    target = base / relative
+    if not is_path_safe(target, base):
+        raise ValueError(f"UNSAFE_PATH: {value!r}")
+    return target
 
 
 def find_workspace_root(start: Path | str | None = None) -> Path:

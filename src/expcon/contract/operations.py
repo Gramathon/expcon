@@ -9,22 +9,30 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from expcon.contract.contract import ExperimentContract, ContractError, load_contract, validate_contract
+from expcon.contract.contract import ExperimentContract, load_contract, validate_contract
 from expcon.contract.canonical import (
     compute_contract_hash,
     compute_scientific_hash,
     compute_execution_hash,
     extract_scientific_parameters,
-    contract_identity,
 )
-from expcon.hashing.canonical import canonical_bytes, canonical_json
+from expcon.hashing.canonical import canonical_bytes
 from expcon.hashing.digest import sha256_bytes, file_sha256
-from expcon.lifecycle.state import ExperimentState, StateError, transition
+from expcon.lifecycle.state import ExperimentState
 from expcon.lifecycle.experiment_state import ExperimentLifecycle
 from expcon.hashing.manifest import compute_directory_manifest
 from expcon.util.path import find_workspace_root
+from expcon.bundle.source import (
+    SourceResolutionError,
+    legacy_source_manifest,
+    resolve_entrypoints,
+    resolve_source_closure,
+    source_manifest,
+)
+from expcon.runner.invocation import InvocationError, validate_invocation_spec
+from expcon.util.json_io import atomic_json
 
 
 class ContractOperationError(Exception):
@@ -59,6 +67,12 @@ def validate_experiment(experiment_dir: Path | str) -> dict[str, Any]:
 
     # Check stage DAG
     stages = contract.get("execution", "stages", default=[])
+    from expcon.util.path import safe_identifier, contained_path
+    for stage in stages:
+        try:
+            safe_identifier(stage.get("id", ""))
+        except ValueError as exc:
+            issues.append(str(exc))
     stage_ids = {s.get("id") for s in stages if isinstance(s, dict) and s.get("id")}
     if len(stage_ids) != len(stages):
         issues.append("Stage ids must be present and unique")
@@ -69,19 +83,32 @@ def validate_experiment(experiment_dir: Path | str) -> dict[str, Any]:
                     issues.append(f"Stage '{stage['id']}' requires unknown stage '{req}'")
     if _has_stage_cycle(stages):
         issues.append("Stage graph contains a cycle")
+    try:
+        validate_invocation_spec(contract.get("execution", "invocation", default=None))
+    except InvocationError as exc:
+        issues.append(str(exc))
+    try:
+        resolve_source_closure(experiment_dir, contract)
+    except SourceResolutionError as exc:
+        issues.append(str(exc))
 
     # Check required outputs
     required = contract.get("outputs", "required", default=[])
     if not required:
         issues.append("No required outputs declared")
+    for relative in required:
+        try:
+            contained_path(experiment_dir, relative)
+        except ValueError as exc:
+            issues.append(str(exc))
 
     acceptance = contract.get("evaluation", "acceptance", default=None)
-    if acceptance is not None and not isinstance(acceptance, dict):
-        issues.append("evaluation.acceptance must be an object")
-    if isinstance(acceptance, dict) and acceptance and not any(
-        key in acceptance for key in ("operator", "rule", "threshold", "metric")
-    ):
-        issues.append("evaluation.acceptance must declare a deterministic rule")
+    if acceptance is not None:
+        from expcon.adjudication.acceptance import validate_acceptance
+        try:
+            validate_acceptance(acceptance)
+        except (ValueError, TypeError) as exc:
+            issues.append(str(exc))
 
     if issues:
         raise ContractOperationError("Validation issues: " + "; ".join(issues))
@@ -129,6 +156,20 @@ def _has_stage_cycle(stages: list[Any]) -> bool:
     return any(visit(node) for node in graph)
 
 
+def _config_hashes(experiment_dir: Path, contract: ExperimentContract) -> dict[str, str]:
+    """Return deterministic hashes for declared execution configuration files."""
+    configs = contract.get("execution", "configs", default=[])
+    if not configs:
+        configs_dir = experiment_dir / "configs"
+        if configs_dir.exists():
+            configs = [str(path.relative_to(experiment_dir)) for path in configs_dir.iterdir() if path.is_file()]
+    return {
+        str(config): file_sha256(experiment_dir / str(config))
+        for config in sorted(configs)
+        if (experiment_dir / str(config)).is_file()
+    }
+
+
 def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | None = None) -> dict[str, Any]:
     """Freeze an experiment: validate, resolve references, compute identities, write lock file.
 
@@ -136,8 +177,11 @@ def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | N
     """
     experiment_dir = Path(experiment_dir).resolve()
 
+    if (experiment_dir / "contract.lock.json").exists():
+        raise ContractOperationError("Experiment is already frozen: retained lock cannot be replaced; create a successor")
+
     # Step 1: Validate
-    validation = validate_experiment(experiment_dir)
+    validate_experiment(experiment_dir)
 
     # Step 2: Determine current state
     if workspace_root is None:
@@ -161,59 +205,23 @@ def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | N
     scientific_hash = compute_scientific_hash(contract_data)
     execution_hash = compute_execution_hash(contract_data)
 
-    # Step 4: Compute source hash (from the experiment directory itself)
-    source_root = experiment_dir
-    source_manifest = compute_directory_manifest(source_root, skip_hidden=True, include=["src/", "scripts/", "configs/"])
-    source_hash = sha256_bytes(canonical_bytes(source_manifest.to_dict()))
+    # Step 4: Compute the versioned, transport-independent executable bundle
+    # identity using the exact same implementation as preflight/materialize.
+    from expcon.bundle.bundle import BUNDLE_IDENTITY_ALGORITHM_V2, compute_bundle_identity
 
-    # Step 5: Compute dependency hash
-    dep_lock = contract.get("environment", "dependency_lock", default="uv.lock")
-    dep_path = experiment_dir.parent / str(dep_lock)
-    dependency_hash = file_sha256(dep_path) if dep_path.exists() else sha256_bytes(canonical_bytes({"missing": str(dep_lock)}))
-
-    # Step 6: Compute dataset hashes
-    dataset_hashes = {}
-    datasets = contract.get("data", "datasets", default=[])
-    if datasets:
-        for ds in datasets:
-            if isinstance(ds, dict) and "path" in ds:
-                ds_path = experiment_dir / str(ds["path"])
-                if ds_path.exists():
-                    dataset_hashes[str(ds["path"])] = file_sha256(ds_path)
-
-    # Step 7: Compute runner hash
-    stages = contract.get("execution", "stages", default=[])
-    runner_entries = []
-    for stage in stages:
-        if isinstance(stage, dict) and "entrypoint" in stage:
-            ep_path = experiment_dir / str(stage["entrypoint"])
-            if ep_path.exists():
-                runner_entries.append({"entrypoint": stage["entrypoint"], "sha256": file_sha256(ep_path)})
-    runner_hash = sha256_bytes(canonical_bytes(runner_entries))
-
-    # Step 8: Compute config hash
-    config_entries = []
-    configs_dir = experiment_dir / "configs"
-    if configs_dir.exists():
-        for f in configs_dir.iterdir():
-            if f.is_file():
-                config_entries.append({"path": str(f.relative_to(experiment_dir)), "sha256": file_sha256(f)})
-    config_hash = sha256_bytes(canonical_bytes(config_entries))
-
-    # Step 9: Compute bundle_id
-    bundle_manifest_dict = {
-        "contract_hash": contract_hash,
-        "scientific_hash": scientific_hash,
-        "execution_hash": execution_hash,
-        "source_hash": source_hash,
-        "dependency_hash": dependency_hash,
-        "dataset_hashes": dataset_hashes,
-        "runner_hash": runner_hash,
-        "config_hash": config_hash,
-    }
-    from expcon.bundle.bundle import bundle_id_for
-
-    bundle_id = bundle_id_for(bundle_manifest_dict)
+    bundle_identity = compute_bundle_identity(
+        experiment_dir, contract, algorithm=contract.data.get("bundle_identity_algorithm", BUNDLE_IDENTITY_ALGORITHM_V2)
+    )
+    discovered_source_manifest = source_manifest(experiment_dir, contract)
+    source_hash = bundle_identity.source_hash
+    dependency_hash = bundle_identity.dependency_hash
+    dataset_hashes = bundle_identity.dataset_hashes
+    runner_hash = bundle_identity.runner_hash
+    bundle_id = bundle_identity.bundle_id
+    config_entries = [
+        {"path": path, "sha256": sha}
+        for path, sha in sorted(_config_hashes(experiment_dir, contract).items())
+    ]
 
     # Step 10: Write contract.lock.json
     frozen_fields = _extract_frozen_fields(contract)
@@ -228,6 +236,7 @@ def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | N
             "version": contract.version,
             "contract_hash": contract_hash,
             "bundle_id": bundle_id,
+            "bundle_identity_algorithm": bundle_identity.algorithm,
         },
         "scientific_parameters_hash": scientific_hash,
         "locks": {
@@ -241,19 +250,21 @@ def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | N
         "scientific_parameters_snapshot": extract_scientific_parameters(contract_data),
         "hashes": {
             "execution_hash": execution_hash,
+            "execution_source_hash": bundle_identity.content["execution_source_closure_sha256"],
         },
     }
 
     lock_path = experiment_dir / "contract.lock.json"
-    lock_path.write_text(
-        json.dumps(lock, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    try:
+        atomic_json(lock_path, lock, replace=False)
+    except FileExistsError as exc:
+        raise ContractOperationError("Experiment is already frozen: concurrent freeze retained its lock") from exc
 
     # Step 11: Write source manifest
     manifests_dir = experiment_dir / "manifests"
     manifests_dir.mkdir(exist_ok=True)
     (manifests_dir / "source_manifest.json").write_text(
-        json.dumps(source_manifest.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(discovered_source_manifest.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
     # Step 12: Transition to FROZEN
@@ -322,13 +333,55 @@ def diff_experiment(experiment_dir: Path | str) -> dict[str, Any]:
         current_sci = extract_scientific_parameters(current_contract.data)
         divergences.extend(_deep_diff("scientific_parameters", frozen_sci, current_sci))
 
-    # Check source hash
-    if lock.get("locks", {}).get("source"):
-        source_root = experiment_dir
-        current_source_manifest = compute_directory_manifest(source_root, skip_hidden=True, include=["src/", "scripts/", "configs/"])
+    # Invocation declarations are frozen execution identity even when they do
+    # not alter the scientific hash.
+    current_execution_hash = compute_execution_hash(current_contract.data)
+    frozen_execution_hash = lock.get("hashes", {}).get("execution_hash")
+    if frozen_execution_hash and current_execution_hash != frozen_execution_hash:
+        divergences.append({
+            "field": "execution",
+            "frozen_hash": frozen_execution_hash,
+            "current_hash": current_execution_hash,
+            "message": "Execution invocation or environment has changed since freeze",
+        })
+
+    # Check the bundle-content identity with the algorithm declared in the
+    # lock.  Historical locks retain their v1 source-only semantics; modern
+    # locks use the full v2 executable closure.
+    bundle_algorithm = lock.get("identity", {}).get("bundle_identity_algorithm")
+    if bundle_algorithm:
+        from expcon.bundle.bundle import compute_bundle_identity
+
+        try:
+            current_bundle = compute_bundle_identity(
+                experiment_dir, current_contract, algorithm=bundle_algorithm
+            )
+            if current_bundle.bundle_id != lock.get("identity", {}).get("bundle_id"):
+                divergences.append({
+                    "field": "bundle_content",
+                    "algorithm": bundle_algorithm,
+                    "frozen_bundle_id": lock.get("identity", {}).get("bundle_id"),
+                    "current_bundle_id": current_bundle.bundle_id,
+                    "message": "Executable bundle content has changed since freeze",
+                })
+        except Exception as exc:
+            divergences.append({
+                "field": "bundle_content",
+                "algorithm": bundle_algorithm,
+                "message": f"Unable to recompute frozen bundle identity: {exc}",
+            })
+    elif lock.get("locks", {}).get("source"):
+        # v1 compatibility: reproduce the historical source-only comparison.
+        current_source_manifest = legacy_source_manifest(experiment_dir, current_contract)
         current_source_hash = sha256_bytes(canonical_bytes(current_source_manifest.to_dict()))
-        # If no source files exist, the hash will be the same as frozen (empty manifest)
-        if current_source_hash != lock["locks"]["source"]:
+        experiment_scoped_legacy_manifest = compute_directory_manifest(
+            experiment_dir, skip_hidden=True, include=["src/", "scripts/", "configs/"]
+        )
+        legacy_source_hash = sha256_bytes(canonical_bytes(experiment_scoped_legacy_manifest.to_dict()))
+        # Pre-0.1.0 freezes scoped source discovery to experiment_dir. Preserve
+        # their frozen identity while allowing the repaired bundler to package a
+        # declared repository-level entrypoint.
+        if current_source_hash != lock["locks"]["source"] and legacy_source_hash != lock["locks"]["source"]:
             divergences.append({
                 "field": "source",
                 "frozen_hash": lock["locks"]["source"],
@@ -338,15 +391,13 @@ def diff_experiment(experiment_dir: Path | str) -> dict[str, Any]:
 
     # Check runner hash
     if lock.get("locks", {}).get("runner"):
-        stages = current_contract.get("execution", "stages", default=[])
-        runner_entries = []
-        for stage in stages:
-            if isinstance(stage, dict) and "entrypoint" in stage:
-                ep_path = experiment_dir / str(stage["entrypoint"])
-                if ep_path.exists():
-                    runner_entries.append({"entrypoint": stage["entrypoint"], "sha256": file_sha256(ep_path)})
+        runner_entries = [
+            {"entrypoint": entry.declared_path, "sha256": entry.sha256}
+            for entry in resolve_entrypoints(experiment_dir, current_contract)
+        ]
         current_runner_hash = sha256_bytes(canonical_bytes(runner_entries))
-        if current_runner_hash != lock["locks"]["runner"]:
+        legacy_runner_hash = sha256_bytes(canonical_bytes([]))
+        if current_runner_hash != lock["locks"]["runner"] and lock["locks"]["runner"] != legacy_runner_hash:
             divergences.append({
                 "field": "runner",
                 "frozen_hash": lock["locks"]["runner"],

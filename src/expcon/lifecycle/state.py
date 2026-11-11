@@ -7,7 +7,6 @@ this module should mutate state directly; always use the transition functions.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
 
 
 class ExperimentState(str, Enum):
@@ -38,6 +37,10 @@ class RunState(str, Enum):
     DATA_VERIFIED = "DATA_VERIFIED"
     STAGE_STARTED = "STAGE_STARTED"
     STAGE_COMPLETED = "STAGE_COMPLETED"
+    STAGE_FAILED = "STAGE_FAILED"
+    STAGE_CANCELLED = "STAGE_CANCELLED"
+    SUBMITTED = "SUBMITTED"
+    PENDING = "PENDING"
     RUNNING = "RUNNING"
     RESULTS_AVAILABLE = "RESULTS_AVAILABLE"
     EVIDENCE_FETCHED = "EVIDENCE_FETCHED"
@@ -78,13 +81,17 @@ RUN_VALID_TRANSITIONS: dict[RunState, list[RunState]] = {
     RunState.CONTRACT_VERIFIED: [RunState.BACKEND_SELECTED, RunState.BLOCKED],
     RunState.BACKEND_SELECTED: [RunState.DATA_VERIFIED, RunState.FAILED_EXECUTION],
     RunState.DATA_VERIFIED: [RunState.STAGE_STARTED, RunState.BLOCKED],
-    RunState.STAGE_STARTED: [RunState.STAGE_COMPLETED, RunState.FAILED_EXECUTION],
+    RunState.STAGE_STARTED: [RunState.STAGE_COMPLETED, RunState.STAGE_FAILED, RunState.STAGE_CANCELLED, RunState.SUBMITTED],
+    RunState.SUBMITTED: [RunState.PENDING, RunState.RUNNING, RunState.RESULTS_AVAILABLE, RunState.FAILED_EXECUTION, RunState.BLOCKED],
+    RunState.PENDING: [RunState.RUNNING, RunState.RESULTS_AVAILABLE, RunState.FAILED_EXECUTION, RunState.BLOCKED],
     RunState.STAGE_COMPLETED: [RunState.RUNNING, RunState.RESULTS_AVAILABLE, RunState.FAILED_EXECUTION],
-    RunState.RUNNING: [RunState.RESULTS_AVAILABLE, RunState.FAILED_EXECUTION],
+    RunState.STAGE_FAILED: [RunState.FAILED_EXECUTION],
+    RunState.STAGE_CANCELLED: [RunState.FAILED_EXECUTION, RunState.BLOCKED],
+    RunState.RUNNING: [RunState.RESULTS_AVAILABLE, RunState.FAILED_EXECUTION, RunState.BLOCKED],
     RunState.RESULTS_AVAILABLE: [RunState.EVIDENCE_FETCHED, RunState.FAILED_EXECUTION],
     RunState.EVIDENCE_FETCHED: [RunState.EVIDENCE_VERIFIED, RunState.EVIDENCE_INVALID],
     RunState.EVIDENCE_VERIFIED: [RunState.ADJUDICATED, RunState.EVIDENCE_INVALID],
-    RunState.ADJUDICATED: [RunState.COMPLETED],
+    RunState.ADJUDICATED: [RunState.COMPLETED, RunState.EVIDENCE_INVALID],
     RunState.COMPLETED: [],
     RunState.BLOCKED: [RunState.CREATED, RunState.COMPLETED],
     RunState.FAILED_EXECUTION: [RunState.COMPLETED],
@@ -100,18 +107,16 @@ class StateError(Exception):
 def is_valid_transition(current: ExperimentState | RunState, target: ExperimentState | RunState) -> bool:
     """Check whether *target* is a valid successor of *current*."""
     if isinstance(current, ExperimentState):
-        table = VALID_TRANSITIONS
+        return isinstance(target, ExperimentState) and target in VALID_TRANSITIONS.get(current, [])
     elif isinstance(current, RunState):
-        table = RUN_VALID_TRANSITIONS
-    else:
-        return False
-
-    allowed = table.get(current, [])
-    return target in allowed
+        return isinstance(target, RunState) and target in RUN_VALID_TRANSITIONS.get(current, [])
+    return False
 
 
 def transition(current: ExperimentState | RunState, target: ExperimentState | RunState) -> None:
     """Validate and allow a state transition, raising StateError on violation."""
+    if type(current) is not type(target):
+        raise StateError("Experiment and run state namespaces cannot be mixed")
     if current == target:
         return  # No-op transitions are allowed
 

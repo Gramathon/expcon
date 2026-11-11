@@ -16,7 +16,6 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
 import sys
 import time
 from dataclasses import dataclass, field
@@ -24,7 +23,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 from expcon.util.env import redact_secrets
+from expcon.util.path import safe_identifier
+from expcon.util.json_io import atomic_json, file_lock
 from expcon.backends.kaggle import KaggleApiTransport, KaggleCliTransport, KaggleTransportError
+from expcon.hashing.digest import file_sha256
+from expcon.runner.invocation import InvocationError, resolve_invocation
 
 
 class BackendError(Exception):
@@ -51,8 +54,12 @@ class RunContext:
     run_id: str = ""
     kernel: Optional[str] = None
     accelerator: str = "none"
-    environment: dict[str, str] = field(default_factory=dict)
+    environment: dict[str, Any] = field(default_factory=dict)
     extra_args: list[str] = field(default_factory=list)
+    input_bindings: dict[str, str] = field(default_factory=dict)
+    environment_bindings: dict[str, str] = field(default_factory=dict)
+    interpreter: Optional[str] = None
+    environment_attestation: dict[str, Any] = field(default_factory=dict)
 
 
 class ExecutionBackend:
@@ -117,19 +124,40 @@ class LocalBackend(ExecutionBackend):
                 "observability": {"status": True, "logs": True}}
 
     def submit(self, bundle: Path, context: RunContext) -> str:
+        if not getattr(context, "run_id", ""):
+            context.run_id = f"{self.name}-{context.experiment_id}-" + __import__("uuid").uuid4().hex[:8]
+        safe_identifier(context.run_id)
+        lock = self.workspace_root / ".expcon/runs" / context.run_id / ".submission.lock"
+        with file_lock(lock):
+            return self._submit_once(bundle, context)
+
+    def _submit_once(self, bundle: Path, context: RunContext) -> str:
         run_id = context.run_id if context.run_id else f"local-{context.experiment_id}-" + __import__("uuid").uuid4().hex[:8]
+        safe_identifier(run_id)
         run_dir = self.workspace_root / ".expcon" / "runs" / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
+        safe_identifier(run_id)
+        attempt = run_dir / "submission.json"
+        if attempt.exists():
+            previous = json.loads(attempt.read_text())
+            if previous.get("bundle_id") != context.bundle_id or previous.get("contract_hash") != context.contract_hash:
+                raise BackendError("DUPLICATE_SUBMISSION_IDENTITY_MISMATCH")
+            if (run_dir / "status.txt").is_file():
+                return run_id
+            raise BackendError("BLOCKED: SUBMISSION_OUTCOME_UNKNOWN; reconcile, never automatically resubmit")
+        atomic_json(attempt, {"run_id": run_id, "bundle_id": context.bundle_id,
+                              "contract_hash": context.contract_hash, "state": "ATTEMPTED"})
+
         # Write run context
         (run_dir / "context.json").write_text(
-            json.dumps(context.__dict__, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            json.dumps({**redact_secrets({k: v for k, v in context.__dict__.items() if k != "environment_bindings"}), "environment_binding_keys": sorted(context.environment_bindings)}, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
 
         # Execute stages from the bundle
         bundle_path = Path(bundle)
         manifest_path = bundle_path / "bundle_manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        json.loads(manifest_path.read_text(encoding="utf-8"))
 
         stages = self._extract_stages_from_contract(bundle_path)
         results = []
@@ -163,20 +191,42 @@ class LocalBackend(ExecutionBackend):
         resolved = bundle_path / "resolved_contract.json"
         if resolved.exists():
             contract = json.loads(resolved.read_text(encoding="utf-8"))
-            return contract.get("execution", {}).get("stages", [])
+            execution = contract.get("execution", {})
+            default_invocation = execution.get("invocation")
+            pending = [{**stage, "_invocation": stage.get("invocation", default_invocation)}
+                       for stage in execution.get("stages", [])]
+            ordered = []
+            completed: set[str] = set()
+            while pending:
+                ready = next((stage for stage in pending if set(stage.get("requires", [])) <= completed), None)
+                if ready is None:
+                    raise BackendError("Invalid or unsupported stage dependency graph")
+                safe_identifier(ready["id"])
+                ordered.append(ready)
+                completed.add(ready["id"])
+                pending.remove(ready)
+            return ordered
         return []
 
     def _execute_stage(
         self, stage: dict[str, Any], bundle_path: Path, run_dir: Path, context: RunContext
-    ) -> "StageResult":
+    ) -> Any:
         from expcon.runner.runner import StageResult
 
-        stage_id = stage.get("id", "unknown")
+        stage_id = safe_identifier(stage.get("id", "unknown"))
         entrypoint = stage.get("entrypoint", "")
 
         # Find the entrypoint script in the bundle
         runner_dir = bundle_path / "runner"
-        script_path = runner_dir / Path(entrypoint).name
+        entrypoint_path = Path(entrypoint)
+        if entrypoint_path.is_absolute() or ".." in entrypoint_path.parts:
+            return StageResult(
+                stage_id=stage_id,
+                success=False,
+                output="",
+                error=f"Unsafe bundle entrypoint: {entrypoint}",
+            )
+        script_path = runner_dir / entrypoint_path
 
         stage_output_dir = run_dir / "stages" / stage_id
         stage_output_dir.mkdir(parents=True, exist_ok=True)
@@ -188,36 +238,98 @@ class LocalBackend(ExecutionBackend):
                 output="",
                 error=f"Entrypoint not found: {script_path}",
             )
-
         try:
-            result = subprocess.run(
-                [sys.executable, str(script_path), "--bundle-root", str(bundle_path), "--output-root", str(stage_output_dir)],
-                capture_output=True,
-                text=True,
-                cwd=str(bundle_path),
-                timeout=300,
-                env=self._clean_env(),
+            invocation = resolve_invocation(
+                stage.get("_invocation"), bundle_root=bundle_path, output_root=stage_output_dir,
+                input_bindings=context.input_bindings, environment_bindings=context.environment_bindings,
+            )
+        except InvocationError as exc:
+            return StageResult(stage_id=stage_id, success=False, output="", error=f"Invocation resolution failed: {exc}")
+        (stage_output_dir / "invocation.json").write_text(
+            json.dumps({
+                **invocation.attestation,
+                "runtime_environment": getattr(context, "environment_attestation", {}),
+                "python_executable": getattr(context, "interpreter", None) or sys.executable,
+            }, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+        command = [getattr(context, "interpreter", None) or sys.executable, str(script_path), *invocation.argv]
+        process_record: dict[str, Any] = {
+            "command": command,
+            "cwd": str(bundle_path),
+            "pythonpath": None,
+            "spawn_attempted": True,
+            "child_pid": None,
+            "returncode": None,
+            "exception": None,
+        }
+        try:
+            source_root = bundle_path / "source"
+            runtime_environment = {**self._clean_env(), **invocation.environment, "PYTHONDONTWRITEBYTECODE": "1"}
+            if source_root.is_dir():
+                # Always prefer the immutable bundled closure to the host checkout.
+                runtime_environment["PYTHONPATH"] = str(source_root)
+            process_record["pythonpath"] = runtime_environment.get("PYTHONPATH")
+            started = time.monotonic()
+            process = subprocess.Popen(
+                command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                cwd=str(bundle_path), env=runtime_environment,
+            )
+            process_record["dispatch_seconds"] = time.monotonic() - started
+            process_record["child_pid"] = process.pid
+            stdout, stderr = process.communicate(timeout=300)
+            stdout, stderr = self._redact_output(stdout, context), self._redact_output(stderr, context)
+            process_record["returncode"] = process.returncode
+            process_record["duration_seconds"] = time.monotonic() - started
+            (stage_output_dir / "stdout.log").write_text(stdout, encoding="utf-8")
+            (stage_output_dir / "stderr.log").write_text(stderr, encoding="utf-8")
+            (stage_output_dir / "process.json").write_text(
+                json.dumps(process_record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
             return StageResult(
                 stage_id=stage_id,
-                success=result.returncode == 0,
-                output=result.stdout,
-                error=result.stderr if result.returncode != 0 else "",
+                success=process.returncode == 0,
+                output=stdout,
+                error=stderr if process.returncode != 0 else "",
+                duration_seconds=process_record["duration_seconds"],
             )
         except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+            stdout, stderr = self._redact_output(stdout, context), self._redact_output(stderr, context)
+            process_record.update({"returncode": process.returncode, "exception": "Stage timed out after 300s"})
+            (stage_output_dir / "stdout.log").write_text(stdout, encoding="utf-8")
+            (stage_output_dir / "stderr.log").write_text(stderr, encoding="utf-8")
+            (stage_output_dir / "process.json").write_text(
+                json.dumps(process_record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
             return StageResult(
                 stage_id=stage_id,
                 success=False,
-                output="",
+                output=stdout,
                 error="Stage timed out after 300s",
             )
         except Exception as exc:
+            process_record["exception"] = f"{type(exc).__name__}: {exc}"
+            (stage_output_dir / "stdout.log").write_text("", encoding="utf-8")
+            (stage_output_dir / "stderr.log").write_text(process_record["exception"], encoding="utf-8")
+            (stage_output_dir / "process.json").write_text(
+                json.dumps(process_record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
             return StageResult(
                 stage_id=stage_id,
                 success=False,
                 output="",
                 error=str(exc),
             )
+
+    @staticmethod
+    def _redact_output(value: str, context: RunContext) -> str:
+        value = redact_secrets(value)
+        for secret in context.environment_bindings.values():
+            if secret:
+                value = value.replace(secret, "***REDACTED***")
+        return value
 
     def _clean_env(self) -> dict[str, str]:
         """Return a clean environment with secrets redacted."""
@@ -279,8 +391,8 @@ class LocalBackend(ExecutionBackend):
         return dest / "evidence"
 
     def cancel(self, run_id: str) -> bool:
-        # Local runs are synchronous; cancel is a no-op
-        return True
+        # Synchronous API has no safe cross-process cancellation handle.
+        return False
 
 
 class KaggleBackend(ExecutionBackend):
@@ -304,67 +416,105 @@ class KaggleBackend(ExecutionBackend):
                 "observability": {"status": True, "logs": True},
                 "competition": {"submit": bool(self.cli.capabilities().get("competition.submit"))}}
 
+    def preflight(self, bundle: Path) -> dict[str, Any]:
+        """Fail before a remote run unless notebook custody can be proven."""
+        api = self.api.capabilities()
+        cli = self.cli.capabilities()
+        if not cli.get("installed") or not cli.get("kernel.push"):
+            raise BackendError("BLOCKED: BACKEND_CAPABILITY_MISMATCH: KAGGLE_PUSH_FAILURE")
+        if not api.get("available"):
+            raise BackendError("BLOCKED: BACKEND_CAPABILITY_MISMATCH: KAGGLE_API_UNAVAILABLE")
+        try:
+            self.api.authenticate()
+        except KaggleTransportError as exc:
+            raise BackendError(f"BLOCKED: BACKEND_CAPABILITY_MISMATCH: {exc}") from exc
+        if not api.get("kernel.inspect") or not api.get("kernel.status"):
+            raise BackendError("BLOCKED: BACKEND_CAPABILITY_MISMATCH: KAGGLE_VERSION_BINDING_FAILURE")
+        if not api.get("output.version_safe"):
+            raise BackendError("BLOCKED: BACKEND_CAPABILITY_MISMATCH: KAGGLE_OUTPUT_IDENTITY_FAILURE")
+        payload = self._notebook_payload(Path(bundle))
+        return {"status": "READY", "notebook": str(payload[0]), "metadata": str(payload[1]),
+                "notebook_sha256": file_sha256(payload[0]), "metadata_sha256": file_sha256(payload[1])}
+
+    @staticmethod
+    def _notebook_payload(bundle: Path) -> tuple[Path, Path]:
+        contract = json.loads((bundle / "resolved_contract.json").read_text(encoding="utf-8"))
+        stages = contract.get("execution", {}).get("stages", [])
+        if len(stages) != 1 or not str(stages[0].get("entrypoint", "")).endswith(".ipynb"):
+            raise BackendError("KAGGLE_NOTEBOOK_DISPATCH_MISMATCH: exactly one .ipynb stage is required")
+        relative = Path(stages[0]["entrypoint"])
+        notebook = bundle / "runner" / relative
+        metadata = notebook.parent / "kernel-metadata.json"
+        if not notebook.is_file() or not metadata.is_file():
+            raise BackendError("KAGGLE_NOTEBOOK_DISPATCH_MISMATCH: frozen notebook or kernel-metadata.json missing from bundle")
+        try:
+            parsed = json.loads(metadata.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise BackendError("KAGGLE_NOTEBOOK_DISPATCH_MISMATCH: malformed kernel metadata") from exc
+        if parsed.get("code_file") != notebook.name:
+            raise BackendError("KAGGLE_NOTEBOOK_DISPATCH_MISMATCH: metadata code_file does not bind frozen notebook")
+        return notebook, metadata
+
     def submit(self, bundle: Path, context: RunContext) -> str:
+        if not getattr(context, "run_id", ""):
+            context.run_id = f"{self.name}-{context.experiment_id}-" + __import__("uuid").uuid4().hex[:8]
+        safe_identifier(context.run_id)
+        lock = self.workspace_root / ".expcon/runs" / context.run_id / ".submission.lock"
+        with file_lock(lock):
+            return self._submit_once(bundle, context)
+
+    def _submit_once(self, bundle: Path, context: RunContext) -> str:
         import uuid
 
         run_id = context.run_id if context.run_id else f"kaggle-{context.experiment_id}-{uuid.uuid4().hex[:8]}"
+        safe_identifier(run_id)
         run_dir = self.workspace_root / ".expcon" / "runs" / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
+        safe_identifier(run_id)
+        attempt = run_dir / "submission.json"
+        if attempt.exists():
+            previous = json.loads(attempt.read_text())
+            if previous.get("bundle_id") != context.bundle_id or previous.get("contract_hash") != context.contract_hash:
+                raise BackendError("DUPLICATE_SUBMISSION_IDENTITY_MISMATCH")
+            if (run_dir / "status.txt").is_file():
+                return run_id
+            raise BackendError("BLOCKED: SUBMISSION_OUTCOME_UNKNOWN; reconcile, never automatically resubmit")
+        atomic_json(attempt, {"run_id": run_id, "bundle_id": context.bundle_id,
+                              "contract_hash": context.contract_hash, "state": "ATTEMPTED"})
+
         # Write run context
         (run_dir / "context.json").write_text(
-            json.dumps(context.__dict__, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            json.dumps({**redact_secrets({k: v for k, v in context.__dict__.items() if k != "environment_bindings"}), "environment_binding_keys": sorted(context.environment_bindings)}, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
 
-        # Prepare Kaggle execution directory
+        # Notebook-native transport: preserve the frozen artifact and its own
+        # metadata verbatim; never generate a substitute Python runner.
+        preflight = self.preflight(bundle)
+        notebook, metadata_path = self._notebook_payload(Path(bundle))
         kaggle_work = run_dir / "kaggle_work"
         kaggle_work.mkdir(parents=True, exist_ok=True)
-
-        # Copy bundle contents
-        bundle_path = Path(bundle)
-        for item in bundle_path.iterdir():
-            if item.is_dir():
-                shutil.copytree(item, kaggle_work / item.name, dirs_exist_ok=True)
-            else:
-                shutil.copy2(item, kaggle_work / item.name)
-
-        # Write kernel metadata
-        kernel_ref = context.kernel or f"{os.environ.get('KAGGLE_USERNAME', 'user')}/{run_id}"
+        shutil.copy2(notebook, kaggle_work / notebook.name)
+        shutil.copy2(metadata_path, kaggle_work / "kernel-metadata.json")
+        kernel_ref = context.kernel or json.loads(metadata_path.read_text(encoding="utf-8")).get("id")
         if not _valid_kaggle_ref(kernel_ref):
             raise BackendError("Invalid Kaggle kernel ref; expected owner/slug")
-        kernel_metadata = {
-            "id": kernel_ref,
-            "title": run_id,
-            "code_file": "runner/kernel.py",
-            "language": "python",
-            "kernel_type": "notebook",
-            "is_private": True,
-            "enable_gpu": context.accelerator != "none",
-            "enable_tpu": False,
-            "enable_internet": False,
-            "dataset_sources": context.environment.get("dataset_sources", []),
-            "competition_sources": context.environment.get("competition_sources", []),
-            "kernel_sources": context.environment.get("kernel_sources", []),
-            "model_sources": context.environment.get("model_sources", []),
-        }
-        (kaggle_work / "kernel-metadata.json").write_text(
-            json.dumps(kernel_metadata, indent=2) + "\n", encoding="utf-8"
-        )
-
-        # Generate a simple kernel runner script
-        kernel_script = kaggle_work / "runner" / "kernel.py"
-        kernel_script.parent.mkdir(exist_ok=True)
-        kernel_script.write_text(
-            self._generate_kernel_script(context), encoding="utf-8"
-        )
+        kernel_metadata = json.loads((kaggle_work / "kernel-metadata.json").read_text(encoding="utf-8"))
+        before = None
+        try:
+            before = self.api.inspect_kernel(kernel_ref).get("versionNumber")
+        except KaggleTransportError:
+            # A new private kernel may not yet exist; binding after push remains mandatory.
+            pass
 
         # Submit via Kaggle CLI (if available)
         kaggle_available = bool(self.cli.capabilities()["installed"])
         if kaggle_available:
             try:
-                self.cli.push_kernel(kaggle_work)
+                push_log = self.cli.push_kernel(kaggle_work)
                 (run_dir / "kaggle_submitted").write_text("true", encoding="utf-8")
-                remote = self._resolve_remote_identity(kernel_ref, context, kernel_metadata)
+                remote = self._resolve_remote_identity(kernel_ref, context, kernel_metadata, before)
+                remote["frozen_payload"] = {**preflight, "push_diagnostic": push_log}
                 (run_dir / "kaggle.json").write_text(json.dumps(remote, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             except Exception as exc:
                 (run_dir / "kaggle_submitted").write_text("false", encoding="utf-8")
@@ -378,12 +528,14 @@ class KaggleBackend(ExecutionBackend):
 
         return run_id
 
-    def _resolve_remote_identity(self, kernel_ref: str, context: RunContext, metadata: dict[str, Any]) -> dict[str, Any]:
+    def _resolve_remote_identity(self, kernel_ref: str, context: RunContext, metadata: dict[str, Any], before: Any = None) -> dict[str, Any]:
         """Bind this run to an exact API-reported kernel version or fail closed."""
         observed = self.api.inspect_kernel(kernel_ref)
         version = next((observed.get(key) for key in ("versionNumber", "version", "kernelVersionNumber") if observed.get(key) is not None), None)
         if version is None:
-            raise BackendError("REMOTE_IDENTITY_UNRESOLVED: Kaggle did not expose an exact kernel version")
+            raise BackendError("KAGGLE_VERSION_BINDING_FAILURE: Kaggle did not expose an exact kernel version")
+        if before is not None and str(version) == str(before):
+            raise BackendError("KAGGLE_VERSION_BINDING_FAILURE: push did not advance the observed version")
         owner, slug = kernel_ref.split("/", 1)
         return redact_secrets({
             "backend": "kaggle", "identity_source": "public_api",
@@ -391,13 +543,39 @@ class KaggleBackend(ExecutionBackend):
             "remote": {"kernel": {"owner": owner, "slug": slug, "ref": kernel_ref,
                                      "id": observed.get("id", observed.get("kernelId")), "version": version},
                        "session": {"id": observed.get("sessionId"), "status": observed.get("status")},
-                       "runtime": {"machine_shape": observed.get("machineType", metadata.get("machine_type")),
-                                   "enable_gpu": metadata["enable_gpu"], "enable_tpu": metadata["enable_tpu"],
-                                   "enable_internet": metadata["enable_internet"]},
-                       "sources": {"datasets": metadata["dataset_sources"], "competitions": metadata["competition_sources"],
-                                   "kernels": metadata["kernel_sources"], "models": metadata["model_sources"]}}})
+                       "runtime": {"machine_shape": observed.get("machineType", metadata.get("machine_shape")),
+                                   "enable_gpu": metadata.get("enable_gpu"), "enable_tpu": metadata.get("enable_tpu"),
+                                   "enable_internet": metadata.get("enable_internet")},
+                       "sources": {"datasets": metadata.get("dataset_sources", []), "competitions": metadata.get("competition_sources", []),
+                                   "kernels": metadata.get("kernel_sources", []), "models": metadata.get("model_sources", [])},
+                       # Provider reporting is retained separately from the
+                       # declaration.  The notebook remains responsible for
+                       # checking mounted parent artifact hashes at runtime.
+                       "kernel_source_binding": {
+                           "declared": metadata.get("kernel_sources", []),
+                           "provider_reported": observed.get("kernelSources", observed.get("kernel_sources")),
+                       }}})
 
-    def _generate_kernel_script(self, context: RunContext) -> str:
+    def _execution_plan(self, bundle: Path, context: RunContext) -> list[dict[str, Any]]:
+        """Resolve the same frozen stage protocol used by the local backend."""
+        contract = json.loads((bundle / "resolved_contract.json").read_text(encoding="utf-8"))
+        plan = []
+        for stage in contract.get("execution", {}).get("stages", []):
+            entrypoint = Path(stage["entrypoint"])
+            if entrypoint.is_absolute() or ".." in entrypoint.parts:
+                raise BackendError(f"Unsafe bundle entrypoint: {stage['entrypoint']}")
+            invocation = resolve_invocation(
+                stage.get("invocation", contract.get("execution", {}).get("invocation")),
+                bundle_root=bundle,
+                output_root=bundle / "candidate-output" / stage["id"],
+                input_bindings=context.input_bindings,
+                environment_bindings=context.environment_bindings,
+            )
+            plan.append({"id": stage["id"], "entrypoint": str(Path("runner") / entrypoint), "argv": invocation.argv,
+                         "environment": invocation.environment, "attestation": invocation.attestation})
+        return plan
+
+    def _generate_kernel_script(self, context: RunContext, plan: list[dict[str, Any]]) -> str:
         return f'''#!/usr/bin/env python3
 """Auto-generated Kaggle kernel runner for {context.experiment_id}/{context.version}."""
 import json
@@ -419,23 +597,28 @@ results = {{
     "outputs": [],
 }}
 
+plan = {json.dumps(plan, sort_keys=True)}
+
 # Try to run declared stages
-runner_dir = bundle_root / "runner"
-if runner_dir.exists():
-    for script in sorted(runner_dir.glob("*.py")):
-        try:
-            proc = subprocess.run(
-                [sys.executable, str(script), "--bundle-root", str(bundle_root), "--output-root", str(output_root)],
-                capture_output=True, text=True, timeout=600, cwd=str(bundle_root)
-            )
-            results["outputs"].append({{
-                "stage": script.name,
+for stage in plan:
+    try:
+        script = bundle_root / stage["entrypoint"]
+        if not script.is_file(): raise RuntimeError(f"Entrypoint missing: {{script}}")
+        env = {{**os.environ, **stage["environment"]}}
+        source = bundle_root / "source"
+        if source.is_dir(): env["PYTHONPATH"] = str(source)
+        proc = subprocess.run(
+            [sys.executable, str(script), *stage["argv"]], capture_output=True,
+            text=True, timeout=600, cwd=str(bundle_root), env=env
+        )
+        results["outputs"].append({{
+                "stage": stage["id"],
                 "success": proc.returncode == 0,
                 "stdout": proc.stdout[-5000:] if proc.stdout else "",
                 "stderr": proc.stderr[-5000:] if proc.stderr else "",
-            }})
-        except Exception as exc:
-            results["outputs"].append({{"stage": script.name, "success": False, "error": str(exc)}})
+        }})
+    except Exception as exc:
+        results["outputs"].append({{"stage": stage["id"], "success": False, "error": str(exc)}})
 
 # Write results
 (output_root / "kaggle_results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
@@ -461,8 +644,10 @@ print(json.dumps(results, indent=2))
                 # Explicit fallback: the remote identity stays API-bound, but
                 # current operational status may come from the official CLI.
                 output = self.cli.kernel_status(ref).lower()
-                if "complete" in output: status = "completed"
-                elif "error" in output or "failed" in output: status = "failed"
+                if "complete" in output:
+                    status = "completed"
+                elif "error" in output or "failed" in output:
+                    status = "failed"
             except Exception:
                 pass
 
@@ -483,9 +668,24 @@ print(json.dumps(results, indent=2))
 
         remote_record = run_dir / "kaggle.json"
         if remote_record.exists():
-            # The CLI's documented output command fetches *latest* output;
-            # it cannot prove an older bound version, so refuse it here.
-            raise BackendError("OUTPUT_VERSION_AMBIGUOUS: CLI output fetch is latest-only for an API-bound kernel version")
+            remote = json.loads(remote_record.read_text(encoding="utf-8"))
+            kernel = remote["remote"]["kernel"]
+            try:
+                self.api.fetch_kernel_outputs(kernel["ref"], kernel["version"], evidence_dir)
+            except KaggleTransportError as exc:
+                raise BackendError(f"KAGGLE_OUTPUT_IDENTITY_FAILURE: {exc}") from exc
+            artifacts = []
+            for path in sorted(evidence_dir.rglob("*")):
+                if path.is_file():
+                    artifacts.append({
+                        "path": str(path.relative_to(evidence_dir)),
+                        "size_bytes": path.stat().st_size,
+                        "sha256": file_sha256(path),
+                        "kernel_version": kernel["version"],
+                        "run_id": run_id,
+                    })
+            (evidence_dir / "artifact_custody.json").write_text(json.dumps({"artifacts": artifacts}, indent=2, sort_keys=True)+"\n", encoding="utf-8")
+            return evidence_dir
 
         # Copy any local results
         kaggle_work = run_dir / "kaggle_work"
@@ -504,11 +704,9 @@ print(json.dumps(results, indent=2))
         return evidence_dir
 
     def cancel(self, run_id: str) -> bool:
-        run_dir = self.workspace_root / ".expcon" / "runs" / run_id
-        status_file = run_dir / "status.txt"
-        if status_file.exists():
-            status_file.write_text("failed", encoding="utf-8")
-        return True
+        # No version-bound provider cancellation endpoint is implemented.
+        # Never relabel a potentially running provider job as cancelled locally.
+        return False
 
     def _clean_env(self) -> dict[str, str]:
         """Return a clean environment with secrets redacted."""

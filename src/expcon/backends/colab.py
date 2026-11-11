@@ -10,7 +10,6 @@ import json
 import os
 import time
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -140,32 +139,36 @@ class ColabBackend(ExecutionBackend):
         selected = resolution["eligible_specs"][0]
         runtime_id = f"expcon-{run_id.lower()}"[:63]
         runtime_body = {"runtimeSpec": selected.get("key", selected)}
-        operation = self.client.create_runtime(runtime_body, runtime_id)
-        operation_name = operation.get("name", "")
-        if not operation_name:
-            raise ColabClientError("Colab create operation did not include an operation name")
-        completed = self.client.wait_operation(operation_name)
-        if completed.get("error"):
-            raise ColabClientError(f"BLOCKED: Colab runtime creation failed: {completed['error']}")
-        runtime = self.client.runtime(runtime_id)
-        observation = _runtime_identity(runtime)
-        if not observation.get("runtime_version"):
-            raise ColabClientError("BLOCKED: Colab did not return an exact runtime image version")
-        record = {
-            "expcon_run_id": run_id,
-            "experiment_id": context.experiment_id,
-            "version": context.version,
-            "contract_sha256": context.contract_hash,
-            "bundle_sha256": context.bundle_id,
-            "create_operation": operation_name,
-            "created_at": _now(),
-            "observations": [observation],
-        }
-        run_dir = self.workspace_root / ".expcon" / "runs" / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-        (run_dir / "colab.json").write_text(json.dumps(redact_secrets(record), indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        # There is intentionally no arbitrary-code execution call here.
-        raise ColabClientError("BLOCKED: Colab Runtime API provisioned a runtime but exposes no bundle execution endpoint")
+        try:
+            operation = self.client.create_runtime(runtime_body, runtime_id)
+            operation_name = operation.get("name", "")
+            if not operation_name:
+                raise ColabClientError("Colab create operation did not include an operation name")
+            completed = self.client.wait_operation(operation_name)
+            if completed.get("error"):
+                raise ColabClientError(f"BLOCKED: Colab runtime creation failed: {completed['error']}")
+            runtime = self.client.runtime(runtime_id)
+            observation = _runtime_identity(runtime)
+            if not observation.get("runtime_version"):
+                raise ColabClientError("BLOCKED: Colab did not return an exact runtime image version")
+            record = {
+                "expcon_run_id": run_id,
+                "experiment_id": context.experiment_id,
+                "version": context.version,
+                "contract_sha256": context.contract_hash,
+                "bundle_sha256": context.bundle_id,
+                "create_operation": operation_name,
+                "created_at": _now(),
+                "observations": [observation],
+            }
+            run_dir = self.workspace_root / ".expcon" / "runs" / run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "colab.json").write_text(json.dumps(redact_secrets(record), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            # There is intentionally no arbitrary-code execution call here.
+            raise ColabClientError("BLOCKED: Colab Runtime API provisioned a runtime but exposes no bundle execution endpoint")
+        finally:
+            # Generic execution is unavailable: never leak the allocated runtime.
+            self.client.delete_runtime(runtime_id)
 
     def status(self, run_id: str) -> RunStatus:
         record_path = self.workspace_root / ".expcon" / "runs" / run_id / "colab.json"
