@@ -11,6 +11,7 @@ dependencies = [
     "jsonschema>=4.0",
     "pyyaml>=6.0",
     "tabulate>=0.9",
+    "tomli>=2; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
@@ -20,13 +21,17 @@ tinker = ["tinker>=0.24; python_version >= '3.11'"]
 expcon = "expcon.cli:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [dependency-groups]
 dev = [
     "pytest>=8",
     "pytest-cov>=5",
+    "ruff>=0.9",
+    "mypy>=1.15",
+    "types-PyYAML>=6",
+    "types-jsonschema>=4",
 ]
 
 [tool.uv]
@@ -45,3 +50,14 @@ expcon = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+check_untyped_defs = true
+
+# Keep quality checks independent of a developer's parent-directory config.
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

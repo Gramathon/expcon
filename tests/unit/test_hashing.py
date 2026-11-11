@@ -1,13 +1,10 @@
 """Tests for canonicalisation and hashing."""
 
-import json
-from pathlib import Path
 
-import pytest
 import yaml
 
-from expcon.hashing.canonical import canonical_json, canonical_dict, canonical_bytes
-from expcon.hashing.digest import sha256_bytes, sha256_text, sha256_hex, file_sha256
+from expcon.hashing.canonical import canonical_json
+from expcon.hashing.digest import sha256_text, sha256_hex, file_sha256
 from expcon.hashing.manifest import compute_directory_manifest, verify_directory_manifest, manifest_hash
 
 

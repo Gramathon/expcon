@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from expcon.runner.backends import ExecutionBackend, RunContext, RunStatus
+from expcon.runner.backends import ExecutionBackend, RunStatus, RunContext as BackendRunContext
 
 
 @dataclass
@@ -56,8 +55,13 @@ class RunContext:
     contract_hash: str
     kernel: Optional[str] = None
     accelerator: str = "none"
-    environment: dict[str, str] = field(default_factory=dict)
+    environment: dict[str, Any] = field(default_factory=dict)
     extra_args: list[str] = field(default_factory=list)
+    input_bindings: dict[str, str] = field(default_factory=dict)
+    environment_bindings: dict[str, str] = field(default_factory=dict)
+    interpreter: Optional[str] = None
+    environment_attestation: dict[str, Any] = field(default_factory=dict)
+    run_id: str = ""
 
 
 class StageRunner:
@@ -69,9 +73,12 @@ class StageRunner:
     def __init__(self, backend: ExecutionBackend):
         self.backend = backend
 
-    def run(self, bundle_path: Path, context: RunContext) -> str:
+    def run(self, bundle_path: Path, context: RunContext | BackendRunContext) -> str:
         """Submit a bundle to the backend and return a run_id."""
-        return self.backend.submit(bundle_path, context)
+        # Preserve the legacy runner context's positional API while normalising
+        # the backend boundary to one explicitly typed record.
+        normalized = BackendRunContext(**asdict(context)) if isinstance(context, RunContext) else context
+        return self.backend.submit(bundle_path, normalized)
 
     def get_status(self, run_id: str) -> RunStatus:
         """Get the status of a run."""

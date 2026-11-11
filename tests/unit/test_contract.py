@@ -1,18 +1,16 @@
 """Tests for contract validation, canonical identity, and scientific hashing."""
 
-import json
-from pathlib import Path
-
 import pytest
 import yaml
 
-from expcon.contract.contract import ExperimentContract, ContractError, load_contract, validate_contract
+from expcon.contract.contract import ContractError, load_contract
 from expcon.contract.canonical import (
     compute_contract_hash,
     compute_scientific_hash,
     compute_execution_hash,
+    compute_execution_identity_hash_v2,
+    compute_scientific_design_hash_v2,
     extract_scientific_parameters,
-    contract_identity,
 )
 from expcon.hashing.canonical import canonical_json
 
@@ -69,6 +67,34 @@ class TestContractLoading:
 
 
 class TestScientificHashing:
+    def test_v2_scientific_design_ignores_experiment_id_version_and_title(self, valid_contract_data):
+        before = compute_scientific_design_hash_v2(valid_contract_data)
+        valid_contract_data["experiment"].update({"id": "E99", "version": "v999", "title": "Administrative rename"})
+        assert compute_scientific_design_hash_v2(valid_contract_data) == before
+
+    def test_v2_scientific_design_changes_with_hypothesis_cohort_metric_and_acceptance(self, valid_contract_data):
+        before = compute_scientific_design_hash_v2(valid_contract_data)
+        valid_contract_data["hypothesis"]["statement"] = "Different question"
+        assert compute_scientific_design_hash_v2(valid_contract_data) != before
+        valid_contract_data["hypothesis"]["statement"] = "Test hypothesis"
+        valid_contract_data["data"] = {"cohort_sha256": "different"}
+        assert compute_scientific_design_hash_v2(valid_contract_data) != before
+        valid_contract_data.pop("data")
+        valid_contract_data["evaluation"]["primary_metric"] = "f1"
+        assert compute_scientific_design_hash_v2(valid_contract_data) != before
+        valid_contract_data["evaluation"]["primary_metric"] = "accuracy"
+        valid_contract_data["evaluation"]["acceptance"] = {"threshold": 0.9}
+        assert compute_scientific_design_hash_v2(valid_contract_data) != before
+
+    def test_v2_execution_changes_for_invocation_and_runner_but_not_transport(self, valid_contract_data):
+        science = compute_scientific_design_hash_v2(valid_contract_data)
+        execution = compute_execution_identity_hash_v2(valid_contract_data, "a" * 64)
+        valid_contract_data["execution"]["invocation"] = {"argv": ["--output", "${outputs.root}"]}
+        assert compute_scientific_design_hash_v2(valid_contract_data) == science
+        assert compute_execution_identity_hash_v2(valid_contract_data, "a" * 64) != execution
+        invocation_execution = compute_execution_identity_hash_v2(valid_contract_data, "a" * 64)
+        assert compute_execution_identity_hash_v2(valid_contract_data, "b" * 64) != invocation_execution
+        assert compute_execution_identity_hash_v2(valid_contract_data, "a" * 64) == invocation_execution
     def test_scientific_hash_changes_with_seed(self, valid_contract_data):
         h1 = compute_scientific_hash(valid_contract_data)
         valid_contract_data["scientific_parameters"]["seed"] = 100

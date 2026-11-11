@@ -66,3 +66,15 @@ def test_redaction_removes_colab_connection_info_and_nested_token():
     encoded = json.dumps(redacted)
     assert "secret" not in encoded
     assert "also-secret" not in encoded
+
+
+def test_allocated_colab_runtime_released_on_missing_version(tmp_path):
+    released = []
+    class MissingVersion(FakeColabClient):
+        def runtime(self, runtime_id):
+            return {"name": runtime_id}
+        def delete_runtime(self, runtime_id):
+            released.append(runtime_id)
+    with pytest.raises(ColabClientError, match="exact runtime"):
+        ColabBackend(tmp_path, client=MissingVersion()).submit(tmp_path, RunContext("E", "v001", "b", "c", run_id="safe"))
+    assert released == ["expcon-safe"]

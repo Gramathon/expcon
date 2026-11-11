@@ -1,0 +1,5 @@
+# Development caches are never package resources.
+global-exclude *.py[cod]
+global-exclude .coverage*
+prune build
+prune dist

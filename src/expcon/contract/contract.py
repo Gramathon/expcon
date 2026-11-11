@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from importlib.resources import files
-import re
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +28,7 @@ def _load_schema(name: str) -> dict:
         "evidence.schema.json": "evidence-v1.json",
     }.get(name, name)
     try:
-        return json.loads(files("expcon").joinpath("resources", "schemas", resource_name).read_text())
+        return json.loads(files("expcon").joinpath("resources").joinpath("schemas").joinpath(resource_name).read_text())
     except (FileNotFoundError, ModuleNotFoundError):  # source-tree compatibility
         return json.loads((SCHEMA_DIR / name).read_text())
 
