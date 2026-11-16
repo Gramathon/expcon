@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "expcon": {
+      "command": "/absolute/path/to/expcon/.venv-mcp/bin/expcon-mcp",
+      "args": ["--stdio", "--workspace", "/absolute/research"],
+      "cwd": "/absolute/research",
+      "exposure": "direct"
+    }
+  }
+}

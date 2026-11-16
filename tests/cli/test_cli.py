@@ -1,6 +1,7 @@
 """CLI behavior tests."""
 
 import json
+import sys
 
 import pytest
 import yaml
@@ -123,6 +124,22 @@ class TestCLI:
         data = json.loads(result.output)
         assert "environment preflight failed" in data["error"].lower()
 
+    def test_failed_child_records_stage_failed_before_terminal_run_failure(self, minimal_project, monkeypatch):
+        tmp_path, exp_dir = minimal_project
+        (exp_dir / "scripts/run.py").write_text("import sys; print('boom', file=sys.stderr); raise SystemExit(9)\n")
+        monkeypatch.setattr(
+            "expcon.service.operations.preflight_local_environment",
+            lambda *_: {"python_executable": sys.executable, "status": "PASS"},
+        )
+        runner = CliRunner()
+        assert runner.invoke(main, ["freeze", str(exp_dir / "EXPERIMENT.yaml"), "--json"]).exit_code == 0
+        assert runner.invoke(main, ["bundle", str(exp_dir / "EXPERIMENT.yaml"), "--json"]).exit_code == 0
+        result = runner.invoke(main, ["run", str(exp_dir / "EXPERIMENT.yaml"), "--backend", "local", "--json"])
+        assert result.exit_code == 1
+        runs = sorted((tmp_path / ".expcon/runs").iterdir())
+        events = [json.loads(line)["event"] for line in (runs[-1] / "events.jsonl").read_text().splitlines()]
+        assert events[-2:] == ["STAGE_FAILED", "FAILED_EXECUTION"]
+
     def test_run_not_frozen(self, minimal_project):
         tmp_path, exp_dir = minimal_project
         runner = CliRunner()
@@ -130,6 +147,62 @@ class TestCLI:
         assert result.exit_code == 1
         data = json.loads(result.output)
         assert "frozen" in data["error"].lower()
+
+    def test_complete_local_fixture_workflow_preserves_repeat_attempts(self, minimal_project, monkeypatch):
+        tmp_path, exp_dir = minimal_project
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("expcon.service.operations.preflight_local_environment", lambda *_: {
+            "python_executable": sys.executable, "python": sys.version, "status": "PASS"})
+        # This is a synthetic CLI fixture, not the later real ML validation.
+        data = yaml.safe_load((exp_dir / "EXPERIMENT.yaml").read_text())
+        data["evaluation"]["acceptance"] = {"metric": "accuracy", "operator": ">=", "threshold": 0.8}
+        (exp_dir / "EXPERIMENT.yaml").write_text(yaml.safe_dump(data))
+        runner = CliRunner()
+        for command in ("validate", "freeze", "bundle"):
+            result = runner.invoke(main, [command, str(exp_dir), "--json"])
+            assert result.exit_code == 0, result.output
+        result = runner.invoke(main, ["run", str(exp_dir), "--json"])
+        assert result.exit_code == 0, result.output
+        run_id = json.loads(result.output)["run_id"]
+        for command in ("fetch", "verify", "verify", "adjudicate", "adjudicate"):
+            result = runner.invoke(main, [command, run_id, "--json"])
+            assert result.exit_code == 0, (command, result.output, result.exception)
+        assert json.loads(result.output)["scientific_verdict"] == "SUPPORTED"
+        run_dir = tmp_path / ".expcon/runs" / run_id
+        assert len(list((run_dir / "verification_reports").glob("*.json"))) == 2
+        assert len(list((run_dir / "adjudications").glob("*.json"))) == 2
+        artifacts = runner.invoke(main, ["artifacts", run_id, "--json"])
+        assert json.loads(artifacts.output)["count"] > 0
+
+    def test_fake_remote_submission_pending_running_complete(self, minimal_project, monkeypatch):
+        from expcon.runner.backends import RunStatus
+        tmp_path, exp_dir = minimal_project
+        monkeypatch.chdir(tmp_path)
+        states = iter(["PENDING", "RUNNING", "COMPLETE"])
+        class FakeBackend:
+            def __init__(self, *_):
+                pass
+            def preflight(self, *_):
+                return {"status": "READY"}
+            def submit(self, bundle, context):
+                return context.run_id
+            def status(self, run_id):
+                return RunStatus(run_id, next(states))
+        monkeypatch.setattr("expcon.service.operations.KaggleBackend", FakeBackend)
+        data = yaml.safe_load((exp_dir / "EXPERIMENT.yaml").read_text())
+        data["execution"]["allowed_backends"] = ["kaggle"]
+        (exp_dir / "EXPERIMENT.yaml").write_text(yaml.safe_dump(data))
+        runner = CliRunner()
+        for command in ("freeze", "bundle"):
+            result = runner.invoke(main, [command, str(exp_dir), "--json"])
+            assert result.exit_code == 0, result.output
+        result = runner.invoke(main, ["run", str(exp_dir), "--backend", "kaggle", "--json"])
+        assert result.exit_code == 0, result.output
+        run_id = json.loads(result.output)["run_id"]
+        for expected in ("RUNNING", "RESULTS_AVAILABLE"):
+            result = runner.invoke(main, ["status", run_id, "--json"])
+            assert result.exit_code == 0, result.output
+            assert json.loads(result.output)["state"] == expected
 
     def test_ps(self, minimal_project):
         tmp_path, exp_dir = minimal_project

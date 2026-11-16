@@ -11,22 +11,38 @@ dependencies = [
     "jsonschema>=4.0",
     "pyyaml>=6.0",
     "tabulate>=0.9",
+    "tomli>=2; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
 tinker = ["tinker>=0.24; python_version >= '3.11'"]
+mcp = [
+    "mcp>=1.26,<2",
+    "uvicorn>=0.30",
+]
+kaggle = [
+    "kaggle>=2.2.5 ; python_full_version >= '3.11'",
+]
 
 [project.scripts]
 expcon = "expcon.cli:main"
+expcon-mcp = "expcon_mcp.server:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [dependency-groups]
 dev = [
     "pytest>=8",
     "pytest-cov>=5",
+    "ruff>=0.9",
+    "mypy>=1.15",
+    "types-PyYAML>=6",
+    "types-jsonschema>=4",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "mcp>=1.26,<2",
 ]
 
 [tool.uv]
@@ -41,7 +57,20 @@ expcon = [
     "resources/skills/experiment-contract/references/*.md",
     "resources/schemas/*.json",
     "resources/templates/*",
+    "resources/kaggle_bootstrap.py",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.mypy]
+check_untyped_defs = true
+
+# Keep quality checks independent of a developer's parent-directory config.
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

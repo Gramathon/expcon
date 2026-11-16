@@ -92,6 +92,48 @@ def test_local_backend_writes_resolved_argv_attestation(tmp_path):
     assert attestation["argv"][0] == "--output"
 
 
+def _local_bundle(tmp_path, source: str) -> tuple[object, object]:
+    bundle = tmp_path / "bundle"
+    runner = bundle / "runner"
+    runner.mkdir(parents=True)
+    (runner / "driver.py").write_text(source, encoding="utf-8")
+    (bundle / "bundle_manifest.json").write_text("{}", encoding="utf-8")
+    (bundle / "resolved_contract.json").write_text(
+        json.dumps({"execution": {"stages": [{"id": "main", "entrypoint": "driver.py"}]}}),
+        encoding="utf-8",
+    )
+    return bundle, RunContext("E01", "v001", "bundle", "contract", run_id="local-result")
+
+
+def test_local_backend_persists_stdout_stderr_and_child_exit(tmp_path):
+    bundle, context = _local_bundle(tmp_path, "import sys; print('out'); print('err', file=sys.stderr); raise SystemExit(7)\n")
+    LocalBackend(tmp_path).submit(bundle, context)
+    stage = tmp_path / ".expcon/runs/local-result/stages/main"
+    process = json.loads((stage / "process.json").read_text())
+    assert process["child_pid"] is not None and process["returncode"] == 7
+    assert (stage / "stdout.log").read_text() == "out\n"
+    assert (stage / "stderr.log").read_text() == "err\n"
+
+
+def test_local_backend_persists_spawn_failure(tmp_path):
+    bundle, context = _local_bundle(tmp_path, "print('never reached')\n")
+    context.interpreter = str(tmp_path / "missing-python")
+    LocalBackend(tmp_path).submit(bundle, context)
+    stage = tmp_path / ".expcon/runs/local-result/stages/main"
+    process = json.loads((stage / "process.json").read_text())
+    assert process["spawn_attempted"] and process["child_pid"] is None
+    assert "FileNotFoundError" in process["exception"]
+
+
+def test_local_backend_persists_successful_child_completion(tmp_path):
+    bundle, context = _local_bundle(tmp_path, "print('ok')\n")
+    LocalBackend(tmp_path).submit(bundle, context)
+    stage = tmp_path / ".expcon/runs/local-result/stages/main"
+    process = json.loads((stage / "process.json").read_text())
+    assert process["returncode"] == 0
+    assert (stage / "stdout.log").read_text() == "ok\n"
+
+
 def test_kaggle_launcher_uses_nested_entrypoint_and_declared_argv(tmp_path):
     from expcon.runner.backends import KaggleBackend
 

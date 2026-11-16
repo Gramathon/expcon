@@ -1,0 +1,26 @@
+# Development environments, caches and package builds.
+__pycache__/
+*.py[cod]
+.venv
+.venv-mcp/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+build/
+dist/
+*.egg-info/
+/coverage.xml
+/coverage.json
+/junit.xml
+/htmlcov/
+# Local experiment/recovery material is never added by blanket staging.
+/.expcon/
+/examples/
+/docs/recovery/
+/tests/recovery/
+
+# Host-specific MCP configuration and local run state.
+/.pi/mcp.json
+/experiments/
+/uv.lock.bak.*

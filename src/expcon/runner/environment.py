@@ -12,16 +12,16 @@ import json
 import platform
 import subprocess
 import sys
-try:  # Python 3.11+
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
-    import tomli as tomllib
+import importlib
+
 from pathlib import Path
 from typing import Any
 
 from expcon.hashing.canonical import canonical_bytes
 from expcon.hashing.digest import file_sha256, sha256_bytes
 
+
+tomllib = importlib.import_module("tomllib" if sys.version_info >= (3, 11) else "tomli")
 
 class EnvironmentError(RuntimeError):
     """The declared execution environment cannot be verified."""
@@ -55,6 +55,9 @@ def _python_requirement_satisfied(version: str, requirement: str) -> bool:
         if "*" in target_text:
             raise EnvironmentError(f"Unsupported Python requirement clause: {clause!r}")
         target = _python_version_tuple(target_text)
+        width = max(len(observed), len(target))
+        observed = observed + (0,) * (width - len(observed))
+        target = target + (0,) * (width - len(target))
         if operator == "<=" and not observed <= target:
             return False
         if operator == ">=" and not observed >= target:
@@ -150,11 +153,12 @@ def preflight_local_environment(bundle_path: Path | str, workspace_root: Path | 
         f"dists={distributions!r}; "
         "[importlib.import_module(name) for name in mods]; "
         "print(json.dumps({'executable':sys.executable,'python_version':sys.version.split()[0],"
-        "'imports':mods,'distributions':{name:importlib.metadata.version(name) for name in dists}}))"
+        "'imports':mods,'distributions':{name:importlib.metadata.version(name) for name in dists},"
+        "'installed_distributions':{d.metadata['Name'].lower().replace('_','-'):d.version for d in importlib.metadata.distributions()}}))"
     )
     result = subprocess.run(
         [str(executable), "-c", probe], capture_output=True, text=True,
-        env={"PYTHONPATH": str(bundle / "source")}, timeout=60,
+        env={"PYTHONPATH": str(bundle / "source"), "PYTHONDONTWRITEBYTECODE": "1"}, timeout=60,
     )
     if result.returncode != 0:
         raise EnvironmentError(f"Frozen runner dependencies are not importable: {result.stderr.strip()}")
@@ -163,11 +167,18 @@ def preflight_local_environment(bundle_path: Path | str, workspace_root: Path | 
         raise EnvironmentError(f"Interpreter Python {runtime['python_version']} does not satisfy {requires_python}")
     if runtime["distributions"] != distributions:
         raise EnvironmentError("Installed direct dependency versions differ from frozen lock")
+    expected_distributions = contract.get("environment", {}).get("distribution_versions")
+    if expected_distributions is not None and expected_distributions != runtime["installed_distributions"]:
+        raise EnvironmentError("Installed environment differs from declared distribution inventory")
+    accelerator = contract.get("execution", {}).get("accelerator", {}).get("type", "none")
+    if accelerator not in {"none", "cpu"}:
+        raise EnvironmentError("Local accelerator environment attestation is not implemented; GPU/TPU dispatch refused")
     identity = sha256_bytes(canonical_bytes({
         "dependency_lock_sha256": observed_sha,
         "python_version": runtime["python_version"],
         "imports": runtime["imports"],
         "distributions": runtime["distributions"],
+        "installed_distributions": runtime["installed_distributions"],
         "python_requires": requires_python,
         "platform": {"system": platform.system(), "machine": platform.machine()},
     }))
@@ -179,6 +190,10 @@ def preflight_local_environment(bundle_path: Path | str, workspace_root: Path | 
         "dependency_lock_sha256": observed_sha,
         "import_roots": runtime["imports"],
         "distribution_versions": runtime["distributions"],
+        "installed_distributions": runtime["installed_distributions"],
+        "distribution_inventory_enforced": expected_distributions is not None,
+        "accelerator": {"type": "cpu", "cuda_runtime": None, "gpu_driver": None,
+                        "torch_version": runtime["installed_distributions"].get("torch")},
         "python_requires": requires_python,
         "platform": {"system": platform.system(), "machine": platform.machine()},
         "runtime_environment_identity": identity,

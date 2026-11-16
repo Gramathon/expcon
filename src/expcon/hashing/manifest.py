@@ -61,7 +61,17 @@ def compute_directory_manifest(
     manifest = DirectoryManifest(root=root, skip_hidden=skip_hidden, follow_symlinks=follow_symlinks)
     seen_paths: set[Path] = set()
 
-    for path in sorted(root.rglob("*")):
+    # Directory-prefix includes can be pruned before traversal, retaining the
+    # exact old entry set/order while avoiding unrelated mutable trees.
+    if include is not None and all(prefix.endswith("/") and not Path(prefix).is_absolute()
+                                   and ".." not in Path(prefix).parts for prefix in include):
+        selected = [root / prefix for prefix in include
+                    if not any(root.joinpath(*Path(prefix).parts[:index]).is_symlink()
+                               for index in range(1, len(Path(prefix).parts) + 1))]
+        candidates = {path for directory in selected for path in directory.rglob("*")}
+    else:
+        candidates = set(root.rglob("*"))
+    for path in sorted(candidates):
         if path in seen_paths:
             continue
         seen_paths.add(path)

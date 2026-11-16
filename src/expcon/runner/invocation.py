@@ -9,6 +9,9 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from expcon.runner.inputs import content_identity
+from expcon.hashing.digest import sha256_bytes
+from expcon.util.env import SECRET_PATTERNS
 
 
 class InvocationError(ValueError):
@@ -46,6 +49,8 @@ def validate_invocation_spec(spec: object) -> None:
             raise InvocationError("Invocation input declarations require safe names and object values")
         if declaration.get("kind", "file") not in {"file", "directory"}:
             raise InvocationError(f"Invocation input {name!r} kind must be file or directory")
+        if "sha256" in declaration and not re.fullmatch(r"[0-9a-f]{64}", str(declaration["sha256"])):
+            raise InvocationError("Input sha256 must be a lowercase SHA-256 digest")
     environment = spec.get("environment", {})
     if not isinstance(environment, dict):
         raise InvocationError("execution.invocation.environment must be an object")
@@ -58,6 +63,11 @@ def validate_invocation_spec(spec: object) -> None:
             raise InvocationError(f"Invocation argv references undeclared input {match.group(1)!r}")
         if token.startswith("${") and token not in {_OUTPUT, _BUNDLE, _CONTRACT} and not match:
             raise InvocationError(f"Unsupported invocation symbol: {token}")
+    for name, digest in spec.get("environment_sha256", {}).items():
+        if name not in environment or any(pattern.search(name) for pattern in SECRET_PATTERNS):
+            raise InvocationError("Only declared nonsecret environment values may be identity-bound")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise InvocationError("Environment sha256 must be a lowercase SHA-256 digest")
 
 
 def resolve_invocation(
@@ -70,8 +80,8 @@ def resolve_invocation(
 ) -> ResolvedInvocation:
     """Expand frozen symbols into a deterministic argv without shell parsing."""
     if spec is None:
-        argv = ["--bundle-root", str(bundle_root), "--output-root", str(output_root)]
-        return ResolvedInvocation(argv, {}, {"protocol": "standard_v1", "argv": argv, "inputs": {}})
+        default_argv = ["--bundle-root", str(bundle_root), "--output-root", str(output_root)]
+        return ResolvedInvocation(default_argv, {}, {"protocol": "standard_v1", "argv": default_argv, "inputs": {}})
     validate_invocation_spec(spec)
     assert isinstance(spec, dict)
     declared = spec.get("inputs", {})
@@ -79,6 +89,7 @@ def resolve_invocation(
     if unknown:
         raise InvocationError(f"Undeclared runtime input binding(s): {unknown}")
     resolved_inputs: dict[str, str] = {}
+    identities: dict[str, Any] = {}
     for name, declaration in declared.items():
         required = declaration.get("required", True)
         raw = input_bindings.get(name)
@@ -109,6 +120,14 @@ def resolve_invocation(
         if declaration.get("kind", "file") == "directory" and not path.is_dir():
             raise InvocationError(f"Input binding must be a directory: {name}")
         resolved_inputs[name] = str(path)
+        try:
+            identity = content_identity(path)
+        except ValueError as exc:
+            raise InvocationError(str(exc)) from exc
+        expected = declaration.get("sha256")
+        if expected is not None and identity["sha256"] != expected:
+            raise InvocationError(f"CONTENT_IDENTITY_MISMATCH: {name}")
+        identities[name] = {**identity, "expected_sha256": expected, "verified": expected is not None}
 
     argv: list[str] = []
     for token in spec.get("argv", []):
@@ -131,12 +150,20 @@ def resolve_invocation(
             argv.append(token)
     environment: dict[str, str] = {}
     for name, token in spec.get("environment", {}).items():
-        key = _ENV.fullmatch(token).group(1)
+        match = _ENV.fullmatch(token)
+        if match is None:
+            raise InvocationError("Invalid environment symbol")
+        key = match.group(1)
         if key not in environment_bindings:
             raise InvocationError(f"Missing required environment binding: {key}")
         environment[name] = environment_bindings[key]
+        expected = spec.get("environment_sha256", {}).get(name)
+        if expected is not None and sha256_bytes(environment[name].encode()) != expected:
+            raise InvocationError(f"ENVIRONMENT_IDENTITY_MISMATCH: {name}")
     return ResolvedInvocation(argv, environment, {
         "protocol": "declared_v1", "argv": argv, "inputs": resolved_inputs,
         "contract_snapshot": str(bundle_root / "resolved_contract.json"),
         "environment_keys": sorted(environment),
+        "input_identities": identities,
+        "environment_identities": dict(spec.get("environment_sha256", {})),
     })

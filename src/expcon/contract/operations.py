@@ -32,6 +32,7 @@ from expcon.bundle.source import (
     source_manifest,
 )
 from expcon.runner.invocation import InvocationError, validate_invocation_spec
+from expcon.util.json_io import atomic_json
 
 
 class ContractOperationError(Exception):
@@ -66,6 +67,16 @@ def validate_experiment(experiment_dir: Path | str) -> dict[str, Any]:
 
     # Check stage DAG
     stages = contract.get("execution", "stages", default=[])
+    from expcon.util.path import safe_identifier, contained_path
+    safe_identifier(contract.experiment_id)
+    safe_identifier(contract.version)
+    if contract.get("execution", "kaggle") is not None and contract.data.get("bundle_identity_algorithm") != "expcon-bundle-v3":
+        issues.append("Kaggle bootstrap requires explicit bundle v3")
+    for stage in stages:
+        try:
+            safe_identifier(stage.get("id", ""))
+        except ValueError as exc:
+            issues.append(str(exc))
     stage_ids = {s.get("id") for s in stages if isinstance(s, dict) and s.get("id")}
     if len(stage_ids) != len(stages):
         issues.append("Stage ids must be present and unique")
@@ -89,14 +100,19 @@ def validate_experiment(experiment_dir: Path | str) -> dict[str, Any]:
     required = contract.get("outputs", "required", default=[])
     if not required:
         issues.append("No required outputs declared")
+    for relative in required:
+        try:
+            contained_path(experiment_dir, relative)
+        except ValueError as exc:
+            issues.append(str(exc))
 
     acceptance = contract.get("evaluation", "acceptance", default=None)
-    if acceptance is not None and not isinstance(acceptance, dict):
-        issues.append("evaluation.acceptance must be an object")
-    if isinstance(acceptance, dict) and acceptance and not any(
-        key in acceptance for key in ("operator", "rule", "threshold", "metric")
-    ):
-        issues.append("evaluation.acceptance must declare a deterministic rule")
+    if acceptance is not None:
+        from expcon.adjudication.acceptance import validate_acceptance
+        try:
+            validate_acceptance(acceptance)
+        except (ValueError, TypeError) as exc:
+            issues.append(str(exc))
 
     if issues:
         raise ContractOperationError("Validation issues: " + "; ".join(issues))
@@ -158,12 +174,15 @@ def _config_hashes(experiment_dir: Path, contract: ExperimentContract) -> dict[s
     }
 
 
-def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | None = None) -> dict[str, Any]:
+def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | None = None, *, expected_bundle_id: str | None = None) -> dict[str, Any]:
     """Freeze an experiment: validate, resolve references, compute identities, write lock file.
 
     After freeze, scientific parameters are immutable.
     """
     experiment_dir = Path(experiment_dir).resolve()
+
+    if (experiment_dir / "contract.lock.json").exists():
+        raise ContractOperationError("Experiment is already frozen: retained lock cannot be replaced; create a successor")
 
     # Step 1: Validate
     validate_experiment(experiment_dir)
@@ -195,8 +214,10 @@ def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | N
     from expcon.bundle.bundle import BUNDLE_IDENTITY_ALGORITHM_V2, compute_bundle_identity
 
     bundle_identity = compute_bundle_identity(
-        experiment_dir, contract, algorithm=BUNDLE_IDENTITY_ALGORITHM_V2
+        experiment_dir, contract, algorithm=contract.data.get("bundle_identity_algorithm", BUNDLE_IDENTITY_ALGORITHM_V2)
     )
+    if expected_bundle_id is not None and bundle_identity.bundle_id != expected_bundle_id:
+        raise ContractOperationError("CANDIDATE_CHANGED: freeze identity differs from reviewed candidate")
     discovered_source_manifest = source_manifest(experiment_dir, contract)
     source_hash = bundle_identity.source_hash
     dependency_hash = bundle_identity.dependency_hash
@@ -240,9 +261,10 @@ def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | N
     }
 
     lock_path = experiment_dir / "contract.lock.json"
-    lock_path.write_text(
-        json.dumps(lock, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    try:
+        atomic_json(lock_path, lock, replace=False)
+    except FileExistsError as exc:
+        raise ContractOperationError("Experiment is already frozen: concurrent freeze retained its lock") from exc
 
     # Step 11: Write source manifest
     manifests_dir = experiment_dir / "manifests"

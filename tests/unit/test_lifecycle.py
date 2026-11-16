@@ -73,6 +73,10 @@ class TestRunStateTransitions:
     def test_stage_started_to_stage_completed(self):
         assert is_valid_transition(RunState.STAGE_STARTED, RunState.STAGE_COMPLETED)
 
+    def test_stage_started_has_exact_terminal_outcomes(self):
+        assert is_valid_transition(RunState.STAGE_STARTED, RunState.STAGE_FAILED)
+        assert is_valid_transition(RunState.STAGE_STARTED, RunState.STAGE_CANCELLED)
+
     def test_stage_completed_to_running(self):
         assert is_valid_transition(RunState.STAGE_COMPLETED, RunState.RUNNING)
 

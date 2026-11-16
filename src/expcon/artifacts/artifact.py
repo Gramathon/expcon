@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from expcon.hashing.digest import file_sha256
+from expcon.util.json_io import atomic_json, file_lock
+from expcon.util.path import safe_identifier
 
 
 class ArtifactError(Exception):
@@ -91,11 +93,19 @@ class ArtifactRegistry:
             "artifacts": [a.to_dict() for a in self._artifacts],
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-        self.artifacts_file.write_text(
-            json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        atomic_json(self.artifacts_file, data)
 
-    def register(
+    def register(self, file_path: Path, artifact_type: str, experiment_id: str,
+                 run_id: str, producer_stage: str = "", parent_inputs=None, metadata=None) -> Artifact:
+        safe_identifier(run_id)
+        if run_id != self.run_dir.name:
+            raise ArtifactError("Producing run does not match registry")
+        with file_lock(self.run_dir / ".artifacts.lock"):
+            self._loaded = False
+            return self._register(file_path, artifact_type, experiment_id, run_id,
+                                  producer_stage, parent_inputs, metadata)
+
+    def _register(
         self,
         file_path: Path,
         artifact_type: str,
@@ -120,7 +130,7 @@ class ArtifactRegistry:
             parent_inputs=parent_inputs or [],
             producer_stage=producer_stage,
             created_at=datetime.now(timezone.utc).isoformat(),
-            verification_state="VERIFIED",
+            verification_state="REGISTERED",
             path=str(file_path),
             metadata=metadata or {},
         )

@@ -1,6 +1,51 @@
 # Expcon
 
+For local validation, CI check names, clean-install commands and release limits,
+see [GitHub release readiness](docs/recovery/EXPCON_GITHUB_RELEASE_READINESS.md).
+
+```bash
+uv sync --locked --group dev
+uv run --no-sync python -B tools/check_quality.py
+PYTHONDONTWRITEBYTECODE=1 uv run --no-sync python -B -m pytest -p no:cacheprovider
+uv run --no-sync python -B docs/recovery/validate_local.py --output-root /tmp/expcon-study
+```
+
+The CPU study trains logistic regression on generated data with a fixed held-out
+split. It checks positive and negative scientific outcomes, a corrupted evidence
+copy and repeated execution. Historical study records are retained separately;
+their absolute paths describe the original host. Generate a fresh study to replay
+the workflow on another machine. `SHA256SUMS` records an older build and is not a
+checksum manifest for the uncommitted recovery or a future release.
+
 **Open, local-first experiment control for AI-assisted ML research.**
+
+**Engineering status:** the recovered local CPU workflow has adversarial tests,
+real logistic-regression trials, negative scientific outcomes, replay comparisons
+and recorded timings. Read the [trust model](docs/recovery/EXPCON_TRUST_MODEL.md),
+[validation report](docs/recovery/EXPCON_VALIDATION_REPORT.md) and
+[research readiness assessment](docs/recovery/EXPCON_RESEARCH_READINESS.md)
+before interpreting the broader design descriptions below.
+
+New opt-in `expcon-bundle-v3` binds materialised executable/configuration payload.
+New evidence packages are sealed against independently retained run records;
+verification does not rewrite evidence. Historical v1/v2 identities retain their
+meaning, and old unanchored evidence is not silently upgraded. A standalone bundle
+check without an expected identity establishes consistency only; execution admission
+and scientific evaluation require the expected run/contract bindings.
+
+Scientific acceptance comes from explicit frozen numeric rules (`>`, `>=`, `<`,
+`<=`, `==`, or an `all` conjunction), using the declared output metric file
+(`evaluation.metrics_file`, default `metrics.json`). Produced thresholds and verdict
+strings have no authority. Missing observations or failed upstream checks cannot
+produce scientific support. The saved original examples emit synthetic fixture
+results; real validation is under `docs/recovery/validation/`.
+
+This is a trusted-host research tool. Hashing does not sandbox Python, authenticate
+a hostile provider, or guarantee numerical reproducibility. Local accelerator
+attestation is currently limited to CPU. Kaggle and Tinker integration remains
+mock-tested rather than live-validated by this recovery; Colab is provisioning-only
+and generic dispatch blocks before allocation. Bayzflow's historical local GPU
+records are reconciled separately and are not a current backend certification.
 
 Expcon provides a deterministic scientific boundary between probabilistic AI agents and heterogeneous compute backends.
 
@@ -1508,3 +1553,13 @@ It is to prove that the same experiment identity, lifecycle, provenance, artifac
 ## License
 
 MIT
+
+## Pi and sol-pi through MCP
+
+Install the controller with `uv venv --python 3.12 .venv-mcp` and
+`uv pip install --python .venv-mcp/bin/python --editable '.[mcp]' --group dev`,
+then configure Pi to launch the absolute path to
+`.venv-mcp/bin/expcon-mcp --stdio --workspace /absolute/research`.
+This keeps the scientific worker environment and dependency lock intact. The complete tool workflow,
+trusted-host model, recovery behavior and Kaggle requirements are documented in
+[the MCP architecture](docs/EXPCON_MCP_ARCHITECTURE.md).

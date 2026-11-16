@@ -39,6 +39,7 @@ from expcon.bundle.source import (
     source_manifest,
 )
 from expcon.runner.invocation import resolve_invocation
+from expcon.util.path import contained_path
 
 
 class BundleError(Exception):
@@ -47,6 +48,7 @@ class BundleError(Exception):
 
 BUNDLE_IDENTITY_ALGORITHM_V1 = "expcon-bundle-v1"
 BUNDLE_IDENTITY_ALGORITHM_V2 = "expcon-bundle-v2"
+BUNDLE_IDENTITY_ALGORITHM_V3 = "expcon-bundle-v3"
 
 
 @dataclass(frozen=True)
@@ -99,7 +101,7 @@ def bundle_id_for(manifest: dict[str, Any]) -> str:
             config_hash=manifest["config_hash"],
         )
         return sha256_bytes(canonical_bytes(protected))
-    if algorithm == BUNDLE_IDENTITY_ALGORITHM_V2:
+    if algorithm in {BUNDLE_IDENTITY_ALGORITHM_V2, BUNDLE_IDENTITY_ALGORITHM_V3}:
         content = manifest.get("bundle_content")
         if not isinstance(content, dict):
             raise BundleError("expcon-bundle-v2 manifest requires bundle_content")
@@ -140,6 +142,8 @@ class BundleManifest:
 
 
 def _dependency_hash(experiment_dir: Path, contract: ExperimentContract) -> str:
+    if contract.data.get("bundle_identity_algorithm") == BUNDLE_IDENTITY_ALGORITHM_V3 and contract.get("environment", "dependency_lock") is not None:
+        return file_sha256(_declared_dependency_path(experiment_dir, contract))
     lock_file = contract.get("environment", "dependency_lock", default="uv.lock")
     lock_path = experiment_dir / str(lock_file)
     if not lock_path.exists():
@@ -147,6 +151,17 @@ def _dependency_hash(experiment_dir: Path, contract: ExperimentContract) -> str:
     if lock_path.exists():
         return file_sha256(lock_path)
     return sha256_bytes(canonical_bytes({"missing": str(lock_file)}))
+
+
+def _declared_dependency_path(experiment_dir: Path, contract: ExperimentContract) -> Path:
+    spec = contract.get("environment", "dependency_lock")
+    relative = spec.get("path") if isinstance(spec, dict) else spec
+    if not isinstance(relative, str):
+        raise BundleError("Dependency lock requires a relative path")
+    path = contained_path(repository_root(experiment_dir, contract), relative)
+    if not path.is_file():
+        raise BundleError("Declared dependency lock is missing")
+    return path
 
 
 def _dataset_hashes(experiment_dir: Path, contract: ExperimentContract) -> dict[str, str]:
@@ -185,11 +200,18 @@ def _config_hash(experiment_dir: Path, contract: ExperimentContract) -> str:
     return sha256_bytes(canonical_bytes(sorted(entries, key=lambda entry: entry["path"])))
 
 
+def _config_entries(experiment_dir: Path, contract: ExperimentContract) -> dict[str, str]:
+    declared = contract.get("execution", "configs", default=[])
+    if not declared and (experiment_dir / "configs").exists():
+        declared = [str(p.relative_to(experiment_dir)) for p in sorted((experiment_dir / "configs").rglob("*")) if p.is_file()]
+    return {relative: file_sha256(contained_path(experiment_dir, relative)) for relative in sorted(declared)}
+
+
 def compute_bundle_identity(
     experiment_dir: Path | str,
     contract: ExperimentContract,
     *,
-    algorithm: str = BUNDLE_IDENTITY_ALGORITHM_V2,
+    algorithm: str | None = None,
 ) -> BundleIdentity:
     """Compute one canonical identity for a candidate executable bundle.
 
@@ -199,6 +221,7 @@ def compute_bundle_identity(
     """
     experiment_dir = Path(experiment_dir).resolve()
     contract_data = contract.data
+    algorithm = algorithm or contract_data.get("bundle_identity_algorithm", BUNDLE_IDENTITY_ALGORITHM_V2)
     repository_manifest = source_manifest(experiment_dir, contract)
     closure = resolve_source_closure(experiment_dir, contract)
     source_provenance = canonical_source_manifest(repository_manifest)
@@ -227,7 +250,7 @@ def compute_bundle_identity(
             dataset_hashes=dataset_hashes, runner_hash=runner_hash,
             config_hash=config_hash, content=content,
         )
-    if algorithm != BUNDLE_IDENTITY_ALGORITHM_V2:
+    if algorithm not in {BUNDLE_IDENTITY_ALGORITHM_V2, BUNDLE_IDENTITY_ALGORITHM_V3}:
         raise BundleError(f"Unsupported bundle identity algorithm: {algorithm}")
 
     content = {
@@ -245,6 +268,23 @@ def compute_bundle_identity(
         "dataset_hashes": dataset_hashes,
         "config_hash": config_hash,
     }
+    if algorithm == BUNDLE_IDENTITY_ALGORITHM_V3:
+        payload = {}
+        for entry in resolve_entrypoints(experiment_dir, contract):
+            payload[entry.bundle_relative_path.as_posix()] = entry.sha256
+            if entry.source_path.suffix == ".ipynb":
+                metadata = entry.source_path.parent / "kernel-metadata.json"
+                payload[(entry.bundle_relative_path.parent / metadata.name).as_posix()] = file_sha256(metadata)
+        for source_entry in closure.entries:
+            payload[source_entry.bundle_relative_path.as_posix()] = source_entry.sha256
+        for relative, digest in _config_entries(experiment_dir, contract).items():
+            payload[(Path("configs") / relative).as_posix()] = digest
+        if contract.get("execution", "kaggle") is not None:
+            for relative, source in kaggle_runtime_files().items():
+                payload[relative] = file_sha256(source)
+        content["payload_files"] = payload
+        if contract.get("environment", "dependency_lock") is not None:
+            payload["dependency.lock"] = file_sha256(_declared_dependency_path(experiment_dir, contract))
     return BundleIdentity(
         algorithm=algorithm,
         bundle_id=sha256_bytes(canonical_bytes({"algorithm": algorithm, "content": content})),
@@ -270,7 +310,7 @@ def verify_frozen_bundle_compatibility(
         "bundle_identity_algorithm", BUNDLE_IDENTITY_ALGORITHM_V1
     )
     frozen_bundle_id = lock.get("identity", {}).get("bundle_id")
-    if algorithm == BUNDLE_IDENTITY_ALGORITHM_V2:
+    if algorithm in {BUNDLE_IDENTITY_ALGORITHM_V2, BUNDLE_IDENTITY_ALGORITHM_V3}:
         current = compute_bundle_identity(experiment_dir, contract, algorithm=algorithm)
         return {
             "status": "PASS" if current.bundle_id == frozen_bundle_id else "FAIL",
@@ -370,7 +410,7 @@ class BundleBuilder:
                  for entry in closure["files"]
                  if entry["repository_relative_path"].startswith("src/") and "/" in entry["repository_relative_path"]}
         local_roots = {path.name for path in (repository_root / "src").iterdir()} if (repository_root / "src").is_dir() else set()
-        imported = set()
+        imported: set[str] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 imported.update(alias.name.split(".")[0] for alias in node.names)
@@ -396,7 +436,7 @@ class BundleBuilder:
         discovered_source_manifest = source_manifest(self.experiment_dir, contract)
         closure = resolve_source_closure(self.experiment_dir, contract)
 
-        manifest_dict = {
+        manifest_dict: dict[str, Any] = {
             "bundle_id": "",
             "bundle_identity_algorithm": identity.algorithm,
             "bundle_content": identity.content,
@@ -418,7 +458,7 @@ class BundleBuilder:
             lock_algorithm = lock.get("identity", {}).get(
                 "bundle_identity_algorithm", BUNDLE_IDENTITY_ALGORITHM_V1
             )
-            if lock_algorithm == BUNDLE_IDENTITY_ALGORITHM_V2 and lock.get("identity", {}).get("bundle_id") != bundle_id:
+            if lock_algorithm in {BUNDLE_IDENTITY_ALGORITHM_V2, BUNDLE_IDENTITY_ALGORITHM_V3} and lock.get("identity", {}).get("bundle_id") != bundle_id:
                 raise BundleError("Frozen v2 bundle content identity diverged; execution is refused")
             if lock_algorithm == BUNDLE_IDENTITY_ALGORITHM_V1:
                 legacy_compatibility = verify_frozen_bundle_compatibility(
@@ -463,6 +503,14 @@ class BundleBuilder:
         runner_dir.mkdir(exist_ok=True)
         self._copy_runner(contract, runner_dir)
         self._copy_source_closure(closure)
+        if identity.algorithm == BUNDLE_IDENTITY_ALGORITHM_V3 and contract.get("environment", "dependency_lock") is not None:
+            shutil.copy2(_declared_dependency_path(self.experiment_dir, contract), self.bundle_dir / "dependency.lock")
+
+        if contract.get("execution", "kaggle") is not None:
+            for relative, source in kaggle_runtime_files().items():
+                destination = self.bundle_dir / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
 
         # Write bundle manifest
         manifest_dict["files"] = self._collect_file_hashes()
@@ -547,6 +595,12 @@ class BundleBuilder:
         return sha256_bytes(canonical_bytes(entries))
 
     def _copy_configs(self, contract: ExperimentContract, dest: Path) -> None:
+        if contract.data.get("bundle_identity_algorithm") == BUNDLE_IDENTITY_ALGORITHM_V3:
+            for relative in _config_entries(self.experiment_dir, contract):
+                target = contained_path(dest, relative)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(contained_path(self.experiment_dir, relative), target)
+            return
         configs_dir = self.experiment_dir / "configs"
         if configs_dir.exists():
             for f in configs_dir.iterdir():
@@ -558,6 +612,14 @@ class BundleBuilder:
             target = self.bundle_dir / entry.bundle_relative_path
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(entry.source_path, target)
+            # Kaggle notebooks execute with adjacent metadata.  Treat that
+            # metadata as immutable transport payload, not as a generated
+            # backend default.  It is included in the bundle file manifest.
+            if entry.source_path.suffix == ".ipynb":
+                metadata = entry.source_path.parent / "kernel-metadata.json"
+                if not metadata.is_file():
+                    raise BundleError(f"Kaggle notebook entrypoint lacks kernel-metadata.json: {entry.declared_path}")
+                shutil.copy2(metadata, target.parent / "kernel-metadata.json")
 
     def _copy_source_closure(self, closure) -> None:
         for entry in closure.entries:
@@ -582,66 +644,112 @@ class BundleBuilder:
 class BundleVerifier:
     """Verifies bundle integrity against its manifest."""
 
-    def __init__(self, bundle_path: Path | str):
+    def __init__(self, bundle_path: Path | str, expected_bundle_id: str | None = None):
         self.bundle_path = Path(bundle_path).resolve()
         self.manifest_path = self.bundle_path / "bundle_manifest.json"
+        self.expected_bundle_id = expected_bundle_id
 
     def verify(self) -> dict[str, Any]:
-        """Verify the bundle. Returns status dict."""
-        errors = []
+        errors: list[str] = []
+        manifest: dict[str, Any] = {}
+        try:
+            manifest = json.loads(self.manifest_path.read_text())
+            self._verify_content(manifest, errors)
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+            errors.append(f"INVALID_BUNDLE: {exc}")
+        if not isinstance(manifest, dict):
+            manifest = {}
+        files = manifest.get("files", [])
+        return {"status": "FAIL" if errors else "PASS", "errors": errors,
+                "bundle_id": manifest.get("bundle_id"), "file_count": len(files) if isinstance(files, list) else 0,
+                "trusted_identity": self.expected_bundle_id is not None and not errors}
 
-        if not self.manifest_path.exists():
-            return {"status": "FAIL", "errors": ["bundle_manifest.json not found"]}
-
-        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
-
-        # Verify each file in manifest
-        for entry in manifest.get("files", []):
-            file_path = self.bundle_path / entry["relative_path"]
-            if not file_path.exists():
-                errors.append(f"MISSING: {entry['relative_path']}")
-                continue
-            actual_size = file_path.stat().st_size
-            if actual_size != entry["size_bytes"]:
-                errors.append(f"SIZE_MISMATCH: {entry['relative_path']}")
-                continue
-            actual_sha = file_sha256(file_path)
-            if actual_sha != entry["sha256"]:
-                errors.append(f"HASH_MISMATCH: {entry['relative_path']}")
-
-        # Check for extra files not in manifest (excluding manifest files themselves)
-        manifest_files = {e["relative_path"] for e in manifest.get("files", [])}
-        protected_extras = {"bundle_manifest.json", "hashes.json"}
-        for path in self.bundle_path.rglob("*"):
-            if path.is_file():
-                rel = str(path.relative_to(self.bundle_path))
-                if rel not in manifest_files and rel not in protected_extras:
-                    errors.append(f"EXTRA_FILE: {rel}")
-
-        # Verify bundle_id matches
-        expected_id = bundle_id_for(manifest)
-        if expected_id != manifest.get("bundle_id"):
+    def _verify_content(self, manifest: dict[str, Any], errors: list[str]) -> None:
+        if self.expected_bundle_id is not None and manifest.get("bundle_id") != self.expected_bundle_id:
+            errors.append("EXPECTED_BUNDLE_ID_MISMATCH")
+        if bundle_id_for(manifest) != manifest.get("bundle_id"):
             errors.append("BUNDLE_ID_MISMATCH")
-
-        # Verify contract_hash
-        resolved = self.bundle_path / "resolved_contract.json"
-        if resolved.exists():
-            from expcon.contract.canonical import compute_contract_hash
-
-            try:
-                contract_data = json.loads(resolved.read_text(encoding="utf-8"))
-                actual_hash = compute_contract_hash(contract_data)
-                if actual_hash != manifest.get("contract_hash"):
-                    errors.append("CONTRACT_HASH_MISMATCH")
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                errors.append("CONTRACT_JSON_CORRUPT")
-
-        return {
-            "status": "PASS" if not errors else "FAIL",
-            "errors": errors,
-            "bundle_id": manifest.get("bundle_id"),
-            "file_count": len(manifest.get("files", [])),
-        }
+        listed: set[str] = set()
+        for entry in manifest["files"]:
+            relative = entry["relative_path"]
+            path = contained_path(self.bundle_path, relative)
+            if relative in listed:
+                errors.append(f"DUPLICATE_FILE: {relative}")
+            listed.add(relative)
+            if not path.is_file():
+                errors.append(f"MISSING: {relative}")
+            elif path.stat().st_size != entry["size_bytes"] or file_sha256(path) != entry["sha256"]:
+                errors.append(f"HASH_MISMATCH: {relative}")
+        for path in self.bundle_path.rglob("*"):
+            if path.is_symlink():
+                contained_path(self.bundle_path, path.relative_to(self.bundle_path).as_posix())
+            if path.is_file():
+                relative = path.relative_to(self.bundle_path).as_posix()
+                if relative not in listed | {"bundle_manifest.json", "hashes.json"}:
+                    errors.append(f"EXTRA_FILE: {relative}")
+        contract = json.loads((self.bundle_path / "resolved_contract.json").read_text())
+        if compute_contract_hash(contract) != manifest["contract_hash"]:
+            errors.append("CONTRACT_HASH_MISMATCH")
+        algorithm = manifest.get("bundle_identity_algorithm", BUNDLE_IDENTITY_ALGORITHM_V1)
+        if algorithm == BUNDLE_IDENTITY_ALGORITHM_V1:
+            # Retain historical interpretation; no stronger execution assurance inferred.
+            if self.expected_bundle_id is not None:
+                errors.append("LEGACY_BUNDLE_REQUIRES_EXPLICIT_COMPATIBILITY")
+            return
+        content = manifest["bundle_content"]
+        for key in ("contract_hash", "scientific_hash", "execution_hash", "runner_hash",
+                    "dependency_hash", "dataset_hashes", "config_hash"):
+            if content[key] != manifest[key]:
+                errors.append(f"IDENTITY_FIELD_MISMATCH: {key}")
+        if content["contract_hash"] != compute_contract_hash(contract):
+            errors.append("EXECUTABLE_CONTRACT_MISMATCH")
+        entries = []
+        for entry in content["entrypoints"]:
+            path = contained_path(self.bundle_path / "runner", entry["entrypoint"])
+            digest = file_sha256(path)
+            entries.append({"entrypoint": entry["entrypoint"], "sha256": digest})
+            if digest != entry["sha256"]:
+                errors.append(f"EXECUTABLE_HASH_MISMATCH: {entry['entrypoint']}")
+        if sha256_bytes(canonical_bytes(entries)) != content["runner_hash"]:
+            errors.append("EXECUTABLE_RUNNER_IDENTITY_MISMATCH")
+        closure = content["execution_source_closure"]
+        if sha256_bytes(canonical_bytes(closure)) != content["execution_source_closure_sha256"]:
+            errors.append("EXECUTABLE_SOURCE_IDENTITY_MISMATCH")
+        for entry in closure["files"]:
+            path = contained_path(self.bundle_path, entry["bundle_relative_path"])
+            if file_sha256(path) != entry["sha256"] or path.stat().st_size != entry["size_bytes"]:
+                errors.append(f"EXECUTABLE_SOURCE_HASH_MISMATCH: {entry['bundle_relative_path']}")
+        source = json.loads((self.bundle_path / "source_manifest.json").read_text())
+        if source != content["repository_source_manifest"] or sha256_bytes(canonical_bytes(source)) != content["repository_source_manifest_sha256"]:
+            errors.append("EXECUTABLE_PROVENANCE_MISMATCH")
+        materialized_closure = json.loads((self.bundle_path / "execution_source_manifest.json").read_text())
+        if materialized_closure != closure:
+            errors.append("EXECUTABLE_CLOSURE_MISMATCH")
+        expected_executables = {str(Path("runner") / item["entrypoint"]) for item in content["entrypoints"]}
+        expected_executables.update(item["bundle_relative_path"] for item in closure["files"])
+        actual_executables = {p.relative_to(self.bundle_path).as_posix()
+                              for directory in ("runner", "source")
+                              for p in (self.bundle_path / directory).rglob("*") if p.is_file()}
+        if algorithm == BUNDLE_IDENTITY_ALGORITHM_V2 and not any(str(s.get("entrypoint", "")).endswith(".ipynb") for s in contract.get("execution", {}).get("stages", [])) and actual_executables != expected_executables:
+            errors.append("EXECUTABLE_UNDECLARED_PAYLOAD")
+        if algorithm == BUNDLE_IDENTITY_ALGORITHM_V3:
+            actual_payload = {p.relative_to(self.bundle_path).as_posix(): file_sha256(p)
+                              for directory in ("runner", "source", "configs")
+                              for p in (self.bundle_path / directory).rglob("*") if p.is_file()}
+            if (self.bundle_path / "dependency.lock").is_file():
+                actual_payload["dependency.lock"] = file_sha256(self.bundle_path / "dependency.lock")
+            if actual_payload != content["payload_files"]:
+                errors.append("EXECUTABLE_PAYLOAD_MISMATCH")
+        elif not any(str(s.get("entrypoint", "")).endswith(".ipynb") for s in contract.get("execution", {}).get("stages", [])):
+            declared_configs = contract.get("execution", {}).get("configs", [])
+            if not declared_configs:
+                declared_configs = [f"configs/{p.name}" for p in sorted((self.bundle_path / "configs").glob("*")) if p.is_file()]
+            configs = [{"path": relative, "sha256": file_sha256(contained_path(self.bundle_path / "configs", Path(relative).name))}
+                       for relative in sorted(declared_configs)]
+            if sha256_bytes(canonical_bytes(configs)) != content["config_hash"]:
+                errors.append("EXECUTABLE_CONFIG_MISMATCH")
+        if algorithm == BUNDLE_IDENTITY_ALGORITHM_V2 and self.expected_bundle_id is not None and any(str(s.get("entrypoint", "")).endswith(".ipynb") for s in contract.get("execution", {}).get("stages", [])):
+            errors.append("UNBOUND_NOTEBOOK_METADATA: requires opt-in bundle v3")
 
 
 def verify_bundle(bundle_path: Path | str) -> dict[str, Any]:
@@ -654,3 +762,13 @@ def create_bundle(experiment_dir: Path | str) -> tuple[Path, str]:
     """Convenience function to create a bundle."""
     builder = BundleBuilder(experiment_dir)
     return builder.build()
+
+
+def kaggle_runtime_files() -> dict[str, Path]:
+    root = Path(__file__).resolve().parents[1]
+    names = ["runner/environment.py", "runner/invocation.py", "runner/inputs.py", "hashing/canonical.py", "hashing/digest.py", "util/path.py", "util/env.py"]
+    result = {"source/expcon/" + name: root / name for name in names}
+    for name in ["__init__.py", "runner/__init__.py", "hashing/__init__.py", "util/__init__.py"]:
+        result["source/expcon/" + name] = root / name
+    result["runner/_expcon_kaggle.py"] = root / "resources/kaggle_bootstrap.py"
+    return result

@@ -16,15 +16,11 @@ from expcon.contract.contract import load_contract
 from expcon.contract.operations import validate_experiment, freeze_experiment, diff_experiment
 from expcon.contract.canonical import contract_identity
 from expcon.lifecycle.experiment_state import ExperimentLifecycle
-from expcon.bundle.bundle import BundleBuilder, BundleVerifier, verify_frozen_bundle_compatibility
-from expcon.runner.runner import StageRunner, RunContext
-from expcon.runner.environment import EnvironmentError, preflight_local_environment
-from expcon.runner.backends import LocalBackend, KaggleBackend, _valid_kaggle_ref
-from expcon.backends.colab import ColabApiClient, ColabBackend, ColabClientError
+from expcon.bundle.bundle import BundleBuilder, BundleVerifier
+from expcon.runner.backends import KaggleBackend, _valid_kaggle_ref
+from expcon.backends.colab import ColabApiClient, ColabClientError
 from expcon.backends.kaggle import KaggleApiTransport, KaggleCliTransport, KaggleTransportError
 from expcon.backends.tinker import TinkerBackend, TinkerCliTransport, TinkerSdkTransport
-from expcon.evidence.evidence import EvidenceVerifier
-from expcon.adjudication.adjudication import Adjudicator
 from expcon.workspace.workspace import WorkspaceError, WorkspaceManager
 from expcon.artifacts.artifact import ArtifactRegistry
 from expcon.util.path import find_workspace_root
@@ -42,7 +38,7 @@ SKILL_REFERENCE_NAMES = (
 
 
 def _skill_root():
-    return files("expcon").joinpath("resources", "skills", "experiment-contract")
+    return files("expcon").joinpath("resources").joinpath("skills").joinpath("experiment-contract")
 
 
 def _skill_health(root) -> dict[str, Any]:
@@ -127,7 +123,7 @@ def init_cmd(name, version, title, description, output_dir, backend, hypothesis,
         fragment = control / "AGENTS.fragment.md"
         if not fragment.exists():
             fragment.write_text(
-                files("expcon").joinpath("resources", "templates", "AGENTS.fragment.md").read_text(),
+                files("expcon").joinpath("resources").joinpath("templates").joinpath("AGENTS.fragment.md").read_text(),
                 encoding="utf-8",
             )
         _output({"status": "INITIALIZED", "project": str(root), "control": str(control),
@@ -210,7 +206,7 @@ def doctor_cmd(as_json):
     import expcon
     root = find_workspace_root()
     skill = _skill_root()
-    checks = {
+    checks: dict[str, Any] = {
         "core": {"expcon": expcon.__version__, "python": sys.version.split()[0]},
         "tools": {name: bool(shutil.which(name)) for name in ("git", "uv", "tmux", "kaggle", "tinker")},
         "skill": {**_skill_health(skill), "path": str(skill.joinpath("SKILL.md"))},
@@ -674,140 +670,10 @@ def verify_bundle_cmd(bundle, as_json):
 @click.option("--env", "environment_bindings", multiple=True, metavar="NAME=VALUE", help="Named runtime environment binding")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def run_cmd(experiment, backend, kernel, accelerator, input_bindings, environment_bindings, as_json):
-    """Run an experiment on a specified backend."""
-    exp_path = _resolve_experiment(experiment)
-    workspace_root = find_workspace_root(exp_path.parent)
-    lifecycle = ExperimentLifecycle(workspace_root)
-
-    # Check if frozen
-    lock_path = exp_path / "contract.lock.json"
-    if not lock_path.exists():
-        _output({"status": "ERROR", "error": "Experiment must be frozen before running"}, as_json)
-        sys.exit(1)
-
-    lock = json.loads(lock_path.read_text(encoding="utf-8"))
-
-    try:
-        validate_experiment(exp_path)
-        divergence = diff_experiment(exp_path)
-        if divergence.get("divergence_detected"):
-            raise RuntimeError("Frozen experiment diverged; execution is refused")
-    except Exception as exc:
-        _output({"status": "ERROR", "error": str(exc)}, as_json)
-        sys.exit(1)
-
-    # Verify allowed backend
-    contract = load_contract(exp_path / "EXPERIMENT.yaml")
-    allowed_backends = contract.get("execution", "allowed_backends", default=[])
-    if backend not in allowed_backends:
-        _output({"status": "ERROR", "error": f"Backend '{backend}' not allowed. Allowed: {allowed_backends}"}, as_json)
-        sys.exit(1)
-
-    # Create run record
-    bundle_dir = exp_path / "bundle"
-    if not bundle_dir.exists():
-        _output({"status": "ERROR", "error": "Bundle not found. Run 'expcon bundle' first."}, as_json)
-        sys.exit(1)
-    bundle_check = BundleVerifier(bundle_dir).verify()
-    if bundle_check["status"] != "PASS":
-        _output({"status": "ERROR", "error": "Bundle verification failed", "details": bundle_check["errors"]}, as_json)
-        sys.exit(1)
-    bundle_compatibility = verify_frozen_bundle_compatibility(exp_path, contract, lock)
-    if bundle_compatibility["status"] != "PASS":
-        _output({"status": "ERROR", "error": "Frozen bundle compatibility verification failed", "details": bundle_compatibility}, as_json)
-        sys.exit(1)
-    materialized_bundle_id = bundle_check["bundle_id"]
-    if materialized_bundle_id != bundle_compatibility["materialized_bundle_id"]:
-        _output({
-            "status": "ERROR",
-            "error": "Materialized bundle does not match the verified canonical bundle content identity",
-            "details": bundle_compatibility,
-        }, as_json)
-        sys.exit(1)
-
-    environment_attestation = {}
-    interpreter = None
-    if backend == "local":
-        try:
-            environment_attestation = preflight_local_environment(bundle_dir, workspace_root)
-            interpreter = environment_attestation["python_executable"]
-        except EnvironmentError as exc:
-            _output({"status": "ERROR", "error": f"Local environment preflight failed: {exc}"}, as_json)
-            sys.exit(1)
-
-    run = lifecycle.create_run(
-        experiment_id=contract.experiment_id,
-        version=contract.version,
-        backend=backend,
-        contract_hash=lock["contract_hash"],
-        bundle_id=materialized_bundle_id,
-        kernel=kernel,
-        accelerator=accelerator,
-        metadata={"bundle_compatibility": bundle_compatibility, "environment": environment_attestation},
-    )
-
-    # Select backend
-    if backend == "local":
-        backend_impl = LocalBackend(workspace_root)
-    elif backend == "kaggle":
-        backend_impl = KaggleBackend(workspace_root)
-    elif backend == "colab":
-        backend_impl = ColabBackend(workspace_root)
-    elif backend == "tinker":
-        backend_impl = TinkerBackend(workspace_root)
-    else:
-        _output({"status": "ERROR", "error": f"Unknown backend: {backend}"}, as_json)
-        sys.exit(1)
-
-    runner = StageRunner(backend_impl)
-
-    context = RunContext(
-        experiment_id=contract.experiment_id,
-        version=contract.version,
-        bundle_id=materialized_bundle_id,
-        contract_hash=lock["contract_hash"],
-        kernel=kernel,
-        accelerator=accelerator,
-        environment={"requirements": contract.get("execution", "requirements", default={})},
-        input_bindings=_parse_named_bindings(input_bindings, "input"),
-        environment_bindings=_parse_named_bindings(environment_bindings, "environment"),
-        interpreter=interpreter,
-        environment_attestation=environment_attestation,
-    )
-
-    # Transition states through the state machine
-    try:
-        lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, "CONTRACT_VERIFIED"), "Contract verified")
-        lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, "BACKEND_SELECTED"), f"Backend: {backend}")
-        lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, "DATA_VERIFIED"), "Data verified")
-        lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, "STAGE_STARTED"), "Stages started")
-    except Exception:
-        pass  # May already be in these states
-
-    # Set run_id in context so backend uses the same ID
-    context.run_id = run.run_id
-
-    # Submit
-    try:
-        runner.run(bundle_dir, context)
-        lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, "STAGE_COMPLETED"), "Stages completed")
-        lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, "RESULTS_AVAILABLE"), "Results available")
-        result = {
-            "status": "SUBMITTED",
-            "run_id": run.run_id,
-            "experiment_id": contract.experiment_id,
-            "version": contract.version,
-            "backend": backend,
-            "bundle_id": materialized_bundle_id,
-            "frozen_bundle_id": lock["identity"]["bundle_id"],
-            "kernel": kernel,
-            "accelerator": accelerator,
-        }
-        _output(result, as_json)
-    except Exception as exc:
-        failure_state = "BLOCKED" if str(exc).startswith("BLOCKED:") else "FAILED_EXECUTION"
-        lifecycle.update_run_state(run.run_id, lifecycle_run_state_from_run(run.run_id, failure_state), str(exc))
-        _output({"status": "ERROR", "error": str(exc), "run_id": run.run_id}, as_json)
+    from expcon.service import operations
+    result = operations.run(find_workspace_root(_resolve_experiment(experiment).parent), experiment=_resolve_experiment(experiment), backend=backend, kernel=kernel, accelerator=accelerator, input_bindings=input_bindings, environment_bindings=environment_bindings, as_json=as_json)
+    _output(result, as_json)
+    if result.get("status") in {"ERROR", "FAIL", "BLOCKED"}:
         sys.exit(1)
 
 
@@ -825,7 +691,7 @@ def _parse_named_bindings(values, label: str) -> dict[str, str]:
             raise click.BadParameter(f"{label} binding must use NAME=VALUE")
         name, value = item.split("=", 1)
         if not name or not value or name in result:
-            raise click.BadParameter(f"invalid or duplicate {label} binding: {item!r}")
+            raise click.BadParameter(f"invalid or duplicate {label} binding name")
         result[name] = value
     return result
 
@@ -864,43 +730,11 @@ def ps_cmd(as_json):
 @click.argument("run_id")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def status_cmd(run_id, as_json):
-    """Get status of a run."""
-    workspace_root = find_workspace_root()
-    lifecycle = ExperimentLifecycle(workspace_root)
-
-    try:
-        run = lifecycle.load_run(run_id)
-    except KeyError:
-        _output({"status": "ERROR", "error": f"Run not found: {run_id}"}, as_json)
-        sys.exit(1)
-
-    # Get backend status
-    if run.backend == "local":
-        backend = LocalBackend(workspace_root)
-    elif run.backend == "kaggle":
-        backend = KaggleBackend(workspace_root)
-    elif run.backend == "tinker":
-        backend = TinkerBackend(workspace_root)
-    else:
-        backend = None
-
-    backend_status = backend.status(run_id) if backend else None
-
-    result = {
-        "run_id": run.run_id,
-        "experiment_id": run.experiment_id,
-        "version": run.version,
-        "state": run.state.value,
-        "backend": run.backend,
-        "created_at": run.created_at,
-        "updated_at": run.updated_at,
-        "contract_hash": run.contract_hash,
-        "bundle_id": run.bundle_id,
-        "kernel": run.kernel,
-        "accelerator": run.accelerator,
-        "backend_status": backend_status.details if backend_status else None,
-    }
+    from expcon.service import operations
+    result = operations.status(find_workspace_root(), run_id=run_id, as_json=as_json)
     _output(result, as_json)
+    if result.get("status") in {"ERROR", "FAIL", "BLOCKED"}:
+        sys.exit(1)
 
 
 # ─── events ──────────────────────────────────────────────────────────────────
@@ -941,108 +775,11 @@ def events_cmd(run_id, follow, as_json):
 @click.option("--output-dir", default=None, help="Output directory for evidence")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def fetch_cmd(run_id, output_dir, as_json):
-    """Fetch evidence from a completed run."""
-    workspace_root = find_workspace_root()
-    lifecycle = ExperimentLifecycle(workspace_root)
-
-    try:
-        run = lifecycle.load_run(run_id)
-    except KeyError:
-        _output({"status": "ERROR", "error": f"Run not found: {run_id}"}, as_json)
-        sys.exit(1)
-
-    if output_dir is None:
-        output_dir = workspace_root / ".expcon" / "fetched" / run_id
-
-    if run.backend == "local":
-        backend = LocalBackend(workspace_root)
-    elif run.backend == "kaggle":
-        backend = KaggleBackend(workspace_root)
-    elif run.backend == "tinker":
-        backend = TinkerBackend(workspace_root)
-    else:
-        _output({"status": "ERROR", "error": f"Unknown backend: {run.backend}"}, as_json)
-        sys.exit(1)
-
-    evidence_path = backend.fetch(run_id, Path(output_dir))
-
-    # Transition to EVIDENCE_FETCHED so verify can proceed
-    try:
-        lifecycle.update_run_state(run_id, lifecycle_run_state_from_run(run_id, "EVIDENCE_FETCHED"), "Evidence fetched")
-    except Exception:
-        pass  # May already be in EVIDENCE_FETCHED state
-
-    # Package evidence into a verifiable bundle with manifest
-    import shutil
-    from datetime import datetime, timezone
-
-    run_dir = lifecycle.run_dir(run_id)
-
-    # Find the experiment directory to locate bundle and contract
-    exp_dir = _find_experiment_dir(workspace_root, run.experiment_id, run.version)
-    bundle_dir = None
-    required_outputs = []
-    if exp_dir:
-        bundle_dir = exp_dir / "bundle"
-        try:
-            contract = load_contract(exp_dir / "EXPERIMENT.yaml")
-            required_outputs = contract.get("outputs", "required", default=[])
-        except Exception:
-            pass
-
-    # Set up output directory structure for package_evidence
-    output_source = run_dir / "packaged_output"
-    output_source.mkdir(exist_ok=True)
-
-    # Copy resolved_contract.json from bundle
-    if bundle_dir and (bundle_dir / "resolved_contract.json").exists():
-        shutil.copy2(bundle_dir / "resolved_contract.json", output_source / "resolved_contract.json")
-
-    # Copy stage outputs to outputs/
-    outputs_dir = output_source / "outputs"
-    outputs_dir.mkdir(exist_ok=True)
-    stages_dir = run_dir / "stages"
-    if stages_dir.exists():
-        for stage_dir in stages_dir.iterdir():
-            if stage_dir.is_dir():
-                for f in stage_dir.iterdir():
-                    if f.is_file():
-                        shutil.copy2(f, outputs_dir / f.name)
-
-    # Copy metrics to metrics/
-    metrics_dir = output_source / "metrics"
-    metrics_dir.mkdir(exist_ok=True)
-    for f in outputs_dir.iterdir():
-        if f.is_file():
-            shutil.copy2(f, metrics_dir / f.name)
-
-    # Create environment.json
-    env_data = {
-        "python": sys.version,
-        "platform": sys.platform,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    (output_source / "environment.json").write_text(
-        json.dumps(env_data, indent=2) + "\n", encoding="utf-8"
-    )
-
-    # Package evidence
-    verifier = EvidenceVerifier(evidence_path)
-    verifier.package_evidence(
-        run_id=run_id,
-        experiment_id=run.experiment_id,
-        contract_hash=run.contract_hash,
-        bundle_id=run.bundle_id,
-        output_dir=output_source,
-        required_outputs=required_outputs,
-    )
-
-    result = {
-        "status": "FETCHED",
-        "run_id": run_id,
-        "evidence_path": str(evidence_path),
-    }
+    from expcon.service import operations
+    result = operations.fetch(find_workspace_root(), run_id=run_id, output_dir=output_dir, as_json=as_json)
     _output(result, as_json)
+    if result.get("status") in {"ERROR", "FAIL", "BLOCKED"}:
+        sys.exit(1)
 
 
 # ─── verify ──────────────────────────────────────────────────────────────────
@@ -1052,47 +789,10 @@ def fetch_cmd(run_id, output_dir, as_json):
 @click.option("--bundle", default=None, help="Bundle path for cross-verification")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def verify_cmd(run_id, bundle, as_json):
-    """Verify evidence for a run."""
-    workspace_root = find_workspace_root()
-    lifecycle = ExperimentLifecycle(workspace_root)
-
-    try:
-        lifecycle.load_run(run_id)
-    except KeyError:
-        _output({"status": "ERROR", "error": f"Run not found: {run_id}"}, as_json)
-        sys.exit(1)
-
-    evidence_dir = workspace_root / ".expcon" / "runs" / run_id / "evidence"
-    if not evidence_dir.exists():
-        # Try fetched evidence
-        fetched_dir = workspace_root / ".expcon" / "fetched" / run_id
-        evidence_dir = fetched_dir / "evidence"
-        if not evidence_dir.exists():
-            evidence_dir = fetched_dir
-
-    bundle_path = Path(bundle) if bundle else None
-
-    # Auto-find bundle if not explicitly provided
-    if bundle_path is None:
-        try:
-            run_record = lifecycle.load_run(run_id)
-            exp_dir = _find_experiment_dir(workspace_root, run_record.experiment_id, run_record.version)
-            if exp_dir and (exp_dir / "bundle").exists():
-                bundle_path = exp_dir / "bundle"
-        except Exception:
-            pass
-
-    verifier = EvidenceVerifier(evidence_dir, bundle_path)
-    result = verifier.verify()
-
-    # Update run state
-    if result["verified"]:
-        lifecycle.update_run_state(run_id, lifecycle_run_state_from_run(run_id, "EVIDENCE_VERIFIED"), "Evidence verified")
-    else:
-        lifecycle.update_run_state(run_id, lifecycle_run_state_from_run(run_id, "EVIDENCE_INVALID"), "; ".join(result["errors"]))
-
+    from expcon.service import operations
+    result = operations.verify(find_workspace_root(), run_id=run_id, bundle=bundle, as_json=as_json)
     _output(result, as_json)
-    if not result["verified"]:
+    if result.get("status") in {"ERROR", "FAIL", "BLOCKED"}:
         sys.exit(1)
 
 
@@ -1102,26 +802,11 @@ def verify_cmd(run_id, bundle, as_json):
 @click.argument("run_id")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def adjudicate_cmd(run_id, as_json):
-    """Adjudicate a run: determine execution, contract, and scientific status."""
-    workspace_root = find_workspace_root()
-    adjudicator = Adjudicator(workspace_root)
-    result = adjudicator.adjudicate(run_id)
-
-    if not as_json:
-        click.secho("=" * 60, fg="cyan")
-        click.secho("ADJUDICATION REPORT", fg="cyan", bold=True)
-        click.secho("=" * 60, fg="cyan")
-        click.echo(f"  Experiment: {result.experiment_id}/{result.version}")
-        click.echo(f"  Run ID:     {result.run_id}")
-        click.secho("-" * 60, fg="cyan")
-        click.echo(f"  Execution:   {result.execution_status}")
-        click.echo(f"  Contract:    {result.contract_status}")
-        click.echo(f"  Evidence:    {result.evidence_status}")
-        verdict_color = "green" if result.scientific_verdict == "SUPPORTED" else "yellow" if result.scientific_verdict == "NOT_SUPPORTED" else "red"
-        click.secho(f"  Scientific:  {result.scientific_verdict}", fg=verdict_color, bold=True)
-        click.secho("=" * 60, fg="cyan")
-    else:
-        _output(result.to_dict(), as_json)
+    from expcon.service import operations
+    result = operations.adjudicate(find_workspace_root(), run_id=run_id, as_json=as_json)
+    _output(result, as_json)
+    if result.get("status") in {"ERROR", "FAIL", "BLOCKED"}:
+        sys.exit(1)
 
 
 # ─── artifacts ───────────────────────────────────────────────────────────────
@@ -1149,8 +834,8 @@ def artifacts_cmd(target, as_json):
     except KeyError:
         # Try as experiment path
         exp_path = _resolve_experiment(target)
-        run = lifecycle.list_runs()
-        exp_runs = [r for r in run if r.experiment_id == load_contract(exp_path / "EXPERIMENT.yaml").experiment_id]
+        all_runs = lifecycle.list_runs()
+        exp_runs = [r for r in all_runs if r.experiment_id == load_contract(exp_path / "EXPERIMENT.yaml").experiment_id]
 
         all_artifacts = []
         for r in exp_runs:
