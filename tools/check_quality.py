@@ -10,7 +10,7 @@ FORMAT_PATHS = [
     "src/expcon/evidence/collection.py",
     "src/expcon/runner/inputs.py",
     "src/expcon/runner/observation.py",
-    "tests/recovery/test_release_regressions.py",
+    "tests/integrity/test_release_regressions.py",
     "tools",
 ]
 
@@ -28,7 +28,7 @@ def main():
             "--no-cache",
             "src/",
             "tools/",
-            "tests/recovery/test_release_regressions.py",
+            "tests/integrity/test_release_regressions.py",
         ],
         ["ruff", "format", "--check", "--no-cache", *FORMAT_PATHS],
         ["mypy", "--cache-dir=/tmp/expcon-release-mypy", "src/"],

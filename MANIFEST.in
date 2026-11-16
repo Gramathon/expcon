@@ -1,4 +1,4 @@
-# Development caches are never package resources. Historical evidence is kept in Git.
+# Development caches are never package resources.
 global-exclude *.py[cod]
 global-exclude .coverage*
 prune build

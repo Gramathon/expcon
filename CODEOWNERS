@@ -1,5 +1,6 @@
 # Code owners for this project
-# Anyone making changes to these files will require review from the specified owners
+# GitHub requests these owners as reviewers when matching files change.
+# To require their approval, enable "Require review from Code Owners" in branch rules.
 
 # All Python files require review
 *.py @Gramathon

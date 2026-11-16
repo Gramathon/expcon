@@ -39,7 +39,7 @@ jobs:
           python -B tools/check_distribution.py "$RUNNER_TEMP/dist"
       - name: Runtime-only installation away from the checkout
         run: |
-          python -B docs/recovery/check_packaging.py --wheel "$RUNNER_TEMP"/dist/*.whl --interpreter "${{ matrix.python }}=$(command -v python)" --report "$RUNNER_TEMP/package-report.json"
+          python -B tools/validation/check_installation.py --wheel "$RUNNER_TEMP"/dist/*.whl --interpreter "${{ matrix.python }}=$(command -v python)" --report "$RUNNER_TEMP/package-report.json"
       - name: Upload validated package and installation diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

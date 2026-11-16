@@ -36,8 +36,8 @@ jobs:
       - name: Actual model, positive/negative outcomes, corruption and replay
         run: |
           mkdir -p "$RUNNER_TEMP/research"
-          uv run --no-sync python -B docs/recovery/validate_local.py --output-root "$RUNNER_TEMP/research/studies" > "$RUNNER_TEMP/research/summary.json"
-          uv run --no-sync python -B docs/recovery/independent_study_check.py "$RUNNER_TEMP"/research/studies/*/validation.json "$RUNNER_TEMP/research/independent.json"
+          uv run --no-sync python -B tools/validation/run_study.py --output-root "$RUNNER_TEMP/research/studies" > "$RUNNER_TEMP/research/summary.json"
+          uv run --no-sync python -B tools/validation/independent_check.py "$RUNNER_TEMP"/research/studies/*/validation.json "$RUNNER_TEMP/research/independent.json"
       - name: Preserve disposable study evidence (no environments or credentials)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
