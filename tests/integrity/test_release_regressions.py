@@ -255,8 +255,8 @@ def test_cli_refuses_invalid_admission_before_creating_run(
     def forbidden_backend(*args, **kwargs):
         pytest.fail("Backend construction must follow successful admission")
 
-    monkeypatch.setattr("expcon.cli.commands.LocalBackend", forbidden_backend)
-    monkeypatch.setattr("expcon.cli.commands.KaggleBackend", forbidden_backend)
+    monkeypatch.setattr("expcon.service.operations.LocalBackend", forbidden_backend)
+    monkeypatch.setattr("expcon.service.operations.KaggleBackend", forbidden_backend)
     backend = "local"
     if mutation == "lock":
         (experiment / "contract.lock.json").unlink()

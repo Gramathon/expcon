@@ -182,6 +182,10 @@ class Adjudicator:
             json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
 
+        run = lifecycle.load_run(run_id)
+        run.metadata["adjudication_path"] = str(adj_file.relative_to(self.workspace_root))
+        lifecycle._save_run(run)
+
         # Update run state
         if evidence_valid and contract_valid and exec_status == ExecutionStatus.COMPLETED and run.state == RunState.EVIDENCE_VERIFIED:
             lifecycle.update_run_state(run_id, RunState.ADJUDICATED, reason="Adjudication complete")

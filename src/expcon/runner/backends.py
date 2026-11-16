@@ -432,6 +432,11 @@ class KaggleBackend(ExecutionBackend):
             raise BackendError("BLOCKED: BACKEND_CAPABILITY_MISMATCH: KAGGLE_VERSION_BINDING_FAILURE")
         if not api.get("output.version_safe"):
             raise BackendError("BLOCKED: BACKEND_CAPABILITY_MISMATCH: KAGGLE_OUTPUT_IDENTITY_FAILURE")
+        frozen = json.loads((Path(bundle) / "resolved_contract.json").read_text())
+        if frozen.get("execution", {}).get("kaggle") is not None:
+            if not (Path(bundle) / "runner/_expcon_kaggle.py").is_file():
+                raise BackendError("BLOCKED: FROZEN_KAGGLE_EXECUTOR_MISSING")
+            return {"status": "READY", "protocol": "expcon-kaggle-v1"}
         payload = self._notebook_payload(Path(bundle))
         return {"status": "READY", "notebook": str(payload[0]), "metadata": str(payload[1]),
                 "notebook_sha256": file_sha256(payload[0]), "metadata_sha256": file_sha256(payload[1])}
@@ -491,11 +496,35 @@ class KaggleBackend(ExecutionBackend):
         # Notebook-native transport: preserve the frozen artifact and its own
         # metadata verbatim; never generate a substitute Python runner.
         preflight = self.preflight(bundle)
-        notebook, metadata_path = self._notebook_payload(Path(bundle))
         kaggle_work = run_dir / "kaggle_work"
         kaggle_work.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(notebook, kaggle_work / notebook.name)
-        shutil.copy2(metadata_path, kaggle_work / "kernel-metadata.json")
+        contract = json.loads((Path(bundle) / "resolved_contract.json").read_text())
+        config = contract.get("execution", {}).get("kaggle")
+        if config is not None:
+            import base64
+            import io
+            import zipfile
+            archive = io.BytesIO()
+            with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
+                for path in sorted(Path(bundle).rglob("*")):
+                    if path.is_file():
+                        output.write(path, path.relative_to(bundle).as_posix())
+            encoded = base64.b64encode(archive.getvalue()).decode("ascii")
+            bootstrap = "import base64,io,zipfile,subprocess,sys\nfrom pathlib import Path\n"
+            bootstrap += "root=Path('/kaggle/working/expcon-bundle'); root.mkdir(exist_ok=True)\n"
+            bootstrap += f"zipfile.ZipFile(io.BytesIO(base64.b64decode({encoded!r}))).extractall(root)\n"
+            bootstrap += "subprocess.run([sys.executable,str(root/'runner/_expcon_kaggle.py'),str(root),'/kaggle/working/expcon-output'],check=True)\n"
+            (kaggle_work / "expcon.py").write_text(bootstrap)
+            metadata = dict(config.get("metadata", {}))
+            metadata.update(code_file="expcon.py", kernel_type="script", language="python")
+            if context.kernel and metadata.get("id") != context.kernel:
+                raise BackendError("BLOCKED: KAGGLE_FROZEN_KERNEL_MISMATCH")
+            (kaggle_work / "kernel-metadata.json").write_text(json.dumps(metadata))
+            metadata_path = kaggle_work / "kernel-metadata.json"
+        else:
+            notebook, metadata_path = self._notebook_payload(Path(bundle))
+            shutil.copy2(notebook, kaggle_work / notebook.name)
+            shutil.copy2(metadata_path, kaggle_work / "kernel-metadata.json")
         kernel_ref = context.kernel or json.loads(metadata_path.read_text(encoding="utf-8")).get("id")
         if not _valid_kaggle_ref(kernel_ref):
             raise BackendError("Invalid Kaggle kernel ref; expected owner/slug")
@@ -514,6 +543,14 @@ class KaggleBackend(ExecutionBackend):
                 push_log = self.cli.push_kernel(kaggle_work)
                 (run_dir / "kaggle_submitted").write_text("true", encoding="utf-8")
                 remote = self._resolve_remote_identity(kernel_ref, context, kernel_metadata, before)
+                if config is not None:
+                    bound = remote["remote"]["kernel"]
+                    pulled = run_dir / "remote-source"
+                    self.cli.pull_source(f"{bound['ref']}/{bound['version']}", pulled)
+                    candidates = list(pulled.glob("*.py"))
+                    expected_digest = file_sha256(kaggle_work / "expcon.py")
+                    if not any(file_sha256(path) == expected_digest for path in candidates):
+                        raise BackendError("KAGGLE_VERSION_BINDING_FAILURE: remote source differs from submitted payload")
                 remote["frozen_payload"] = {**preflight, "push_diagnostic": push_log}
                 (run_dir / "kaggle.json").write_text(json.dumps(remote, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             except Exception as exc:
@@ -521,8 +558,7 @@ class KaggleBackend(ExecutionBackend):
                 (run_dir / "kaggle_error.txt").write_text(str(exc), encoding="utf-8")
                 raise
         else:
-            # Kaggle CLI not available - simulate for testing
-            (run_dir / "kaggle_submitted").write_text("simulated", encoding="utf-8")
+            raise BackendError("BLOCKED: KAGGLE_CLI_UNAVAILABLE")
 
         (run_dir / "status.txt").write_text("running", encoding="utf-8")
 
@@ -638,7 +674,7 @@ print(json.dumps(results, indent=2))
             remote = json.loads(remote_record.read_text(encoding="utf-8"))
             ref = remote["remote"]["kernel"]["ref"]
             try:
-                observed = self.api.kernel_status(ref)
+                observed = self.api.kernel_status(f"{ref}/{remote['remote']['kernel']['version']}")
                 status = str(observed.get("status", observed.get("state", status))).lower()
             except KaggleTransportError:
                 # Explicit fallback: the remote identity stays API-bound, but
@@ -685,23 +721,9 @@ print(json.dumps(results, indent=2))
                         "run_id": run_id,
                     })
             (evidence_dir / "artifact_custody.json").write_text(json.dumps({"artifacts": artifacts}, indent=2, sort_keys=True)+"\n", encoding="utf-8")
-            return evidence_dir
+            return evidence_dir / "expcon-output" if (evidence_dir / "expcon-output").is_dir() else evidence_dir
 
-        # Copy any local results
-        kaggle_work = run_dir / "kaggle_work"
-        if kaggle_work.exists():
-            for item in kaggle_work.iterdir():
-                if item.is_file():
-                    shutil.copy2(item, evidence_dir / item.name)
-
-        # If no evidence was fetched, create a placeholder
-        if not any(evidence_dir.iterdir()):
-            (evidence_dir / "kaggle_results.json").write_text(
-                json.dumps({"run_id": run_id, "status": "no_output_retrieved", "note": "Kaggle output not available"}),
-                encoding="utf-8",
-            )
-
-        return evidence_dir
+        raise BackendError("KAGGLE_OUTPUT_IDENTITY_FAILURE: missing remote binding")
 
     def cancel(self, run_id: str) -> bool:
         # No version-bound provider cancellation endpoint is implemented.

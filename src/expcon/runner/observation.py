@@ -24,6 +24,13 @@ def normalise_status(value: str) -> str:
 
 
 def observe(lifecycle, run_id: str, provider_state: str) -> str:
+    from expcon.util.json_io import file_lock
+
+    with file_lock(lifecycle.run_dir(run_id) / ".observation.lock"):
+        return _observe(lifecycle, run_id, provider_state)
+
+
+def _observe(lifecycle, run_id: str, provider_state: str) -> str:
     state = normalise_status(provider_state)
     run = lifecycle.load_run(run_id)
     active = {

@@ -1,0 +1,9 @@
+{
+  "status": "TRUSTED_HOST_MCP_IMPLEMENTED",
+  "isolation_attested": false,
+  "offline_tests": {"passed": 276, "skipped_live_kaggle": 2},
+  "live_kaggle_certified": false,
+  "live_kaggle_blocker": "Requires Python >=3.11 with expcon[kaggle], configured provider credentials and EXPCON_LIVE_KAGGLE_KERNEL",
+  "transports": ["stdio", "loopback_streamable_http"],
+  "scientific_execution": "Trusted local execution supported; no OS isolation claim"
+}

@@ -68,6 +68,10 @@ def validate_experiment(experiment_dir: Path | str) -> dict[str, Any]:
     # Check stage DAG
     stages = contract.get("execution", "stages", default=[])
     from expcon.util.path import safe_identifier, contained_path
+    safe_identifier(contract.experiment_id)
+    safe_identifier(contract.version)
+    if contract.get("execution", "kaggle") is not None and contract.data.get("bundle_identity_algorithm") != "expcon-bundle-v3":
+        issues.append("Kaggle bootstrap requires explicit bundle v3")
     for stage in stages:
         try:
             safe_identifier(stage.get("id", ""))
@@ -170,7 +174,7 @@ def _config_hashes(experiment_dir: Path, contract: ExperimentContract) -> dict[s
     }
 
 
-def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | None = None) -> dict[str, Any]:
+def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | None = None, *, expected_bundle_id: str | None = None) -> dict[str, Any]:
     """Freeze an experiment: validate, resolve references, compute identities, write lock file.
 
     After freeze, scientific parameters are immutable.
@@ -212,6 +216,8 @@ def freeze_experiment(experiment_dir: Path | str, workspace_root: Path | str | N
     bundle_identity = compute_bundle_identity(
         experiment_dir, contract, algorithm=contract.data.get("bundle_identity_algorithm", BUNDLE_IDENTITY_ALGORITHM_V2)
     )
+    if expected_bundle_id is not None and bundle_identity.bundle_id != expected_bundle_id:
+        raise ContractOperationError("CANDIDATE_CHANGED: freeze identity differs from reviewed candidate")
     discovered_source_manifest = source_manifest(experiment_dir, contract)
     source_hash = bundle_identity.source_hash
     dependency_hash = bundle_identity.dependency_hash

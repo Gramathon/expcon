@@ -16,9 +16,17 @@ dependencies = [
 
 [project.optional-dependencies]
 tinker = ["tinker>=0.24; python_version >= '3.11'"]
+mcp = [
+    "mcp>=1.26,<2",
+    "uvicorn>=0.30",
+]
+kaggle = [
+    "kaggle>=2.2.5 ; python_full_version >= '3.11'",
+]
 
 [project.scripts]
 expcon = "expcon.cli:main"
+expcon-mcp = "expcon_mcp.server:main"
 
 [build-system]
 requires = ["setuptools>=77"]
@@ -32,6 +40,9 @@ dev = [
     "mypy>=1.15",
     "types-PyYAML>=6",
     "types-jsonschema>=4",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "mcp>=1.26,<2",
 ]
 
 [tool.uv]
@@ -46,10 +57,12 @@ expcon = [
     "resources/skills/experiment-contract/references/*.md",
     "resources/schemas/*.json",
     "resources/templates/*",
+    "resources/kaggle_bootstrap.py",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 
 [tool.mypy]
 check_untyped_defs = true

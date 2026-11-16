@@ -363,3 +363,19 @@ not in a public issue.
 ## Licence
 
 [MIT](LICENSE).
+
+## Pi and sol-pi through MCP
+
+Install the controller in a separate environment:
+
+```bash
+uv venv --python 3.12 .venv-mcp
+uv pip install --python .venv-mcp/bin/python --editable '.[mcp]' --group dev
+```
+
+Copy `.pi/mcp.example.json` to `.pi/mcp.json` and set the absolute controller
+executable and research workspace paths. See [the MCP workflow](docs/EXPCON_MCP_ARCHITECTURE.md)
+for explicit freeze/run tools, persistent research history and deployment limits.
+
+The MCP branch passes 276 tests on Python 3.12, with two live Kaggle tests skipped.
+Live Kaggle execution and Pi extension TypeScript checks remain unverified.

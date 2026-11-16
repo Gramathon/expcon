@@ -168,9 +168,13 @@ class ExperimentLifecycle:
         kernel: Optional[str] = None,
         accelerator: str = "none",
         metadata: Optional[dict[str, Any]] = None,
+        run_id: Optional[str] = None,
     ) -> RunRecord:
         """Create a new run record."""
-        run_id = f"run-{experiment_id}-{uuid.uuid4().hex[:8]}"
+        run_id = run_id or f"run-{experiment_id}-{uuid.uuid4().hex[:8]}"
+        safe_identifier(run_id)
+        if (self.run_dir(run_id) / "run.json").exists():
+            raise ValueError("RUN_ALREADY_EXISTS")
         now = _utc_now()
         run = RunRecord(
             run_id=run_id,

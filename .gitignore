@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .venv
+.venv-mcp/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -18,3 +19,8 @@ dist/
 /examples/
 /docs/recovery/
 /tests/recovery/
+
+# Host-specific MCP configuration and local run state.
+/.pi/mcp.json
+/experiments/
+/uv.lock.bak.*

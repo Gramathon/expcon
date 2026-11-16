@@ -1,0 +1,5 @@
+# Preserve raw historical test reports/patches byte-for-byte, including trace whitespace.
+docs/recovery/*.xml -whitespace
+docs/recovery/release/*.xml -whitespace
+docs/recovery/release/*.log -whitespace
+docs/recovery/evidence/initial-worktree.patch -whitespace

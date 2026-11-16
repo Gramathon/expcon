@@ -60,8 +60,17 @@ class KaggleApiTransport:
             "submission.inspect": self.available,
             # The official API surface varies by installed client version.  A
             # backend may only accept output when it can request a bound version.
-            "output.version_safe": bool(self.available and callable(getattr(self.api, "kernels_output", None))),
+            "output.version_safe": self._version_output_supported(),
         }
+
+    def _version_output_supported(self) -> bool:
+        import inspect
+        method = getattr(self.api, "kernels_output", None)
+        if callable(method):
+            parameters = inspect.signature(method).parameters
+            if "kernel_version_number" in parameters or any(p.kind == p.VAR_KEYWORD for p in parameters.values()):
+                return True
+        return KaggleCliTransport().version_safe()
 
     def authenticate(self) -> None:
         if not self.api:
@@ -97,6 +106,12 @@ class KaggleApiTransport:
 
     def kernel_status(self, ref: str) -> dict[str, Any]:
         self.authenticate()
+        if len(ref.split("/")) == 3:
+            cli = KaggleCliTransport()
+            if cli.version_safe():
+                result = cli.kernel_status(ref).lower()
+                state = "completed" if "complete" in result else "failed" if "error" in result or "failed" in result else "running"
+                return {"status": state}
         result = self._read("kernel.status", lambda: self.api.kernels_status(ref))
         return _object_dict(result)
 
@@ -116,6 +131,15 @@ class KaggleApiTransport:
         if not callable(getattr(self.api, "kernels_output", None)):
             raise KaggleCapabilityError("KAGGLE_OUTPUT_IDENTITY_FAILURE: version-addressable output API unavailable")
         destination.mkdir(parents=True, exist_ok=True)
+        import inspect
+        method = self.api.kernels_output
+        parameters = inspect.signature(method).parameters
+        if "kernel_version_number" not in parameters and not any(p.kind == p.VAR_KEYWORD for p in parameters.values()):
+            cli = KaggleCliTransport()
+            if not cli.version_safe():
+                raise KaggleCapabilityError("KAGGLE_OUTPUT_IDENTITY_FAILURE: CLI >=2.2.5 required")
+            cli.fetch_current_outputs(f"{ref}/{version}", destination)
+            return
         try:
             # The official client accepts a version argument on supported releases.
             self.api.kernels_output(ref, path=str(destination), kernel_version_number=version)
@@ -135,6 +159,13 @@ class KaggleCliTransport:
         present = shutil.which(self.executable) is not None
         return {"installed": present, "kernel.push": present, "kernel.status": present,
                 "output.fetch": present, "kernel.logs": present, "competition.submit": present}
+
+    def version_safe(self) -> bool:
+        import re
+        if not shutil.which(self.executable):
+            return False
+        match = re.search(r"(\d+)\.(\d+)\.(\d+)", self._run(["--version"]).stdout)
+        return bool(match and tuple(map(int, match.groups())) >= (2, 2, 5))
 
     def authenticated_identity(self) -> dict[str, str]:
         """Read non-secret OAuth client facts from the official CLI."""

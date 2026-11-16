@@ -16,7 +16,12 @@ def collect_outputs(lifecycle, run, bundle: Path, raw: Path) -> Path:
     source.mkdir(parents=True)
     contract = json.loads((bundle / "resolved_contract.json").read_text())
     shutil.copy2(bundle / "resolved_contract.json", source / "resolved_contract.json")
-    environment = run.metadata.get("environment")
+    remote_environment = raw / "environment.json"
+    environment = (
+        json.loads(remote_environment.read_text())
+        if run.backend == "kaggle" and remote_environment.is_file()
+        else run.metadata.get("environment")
+    )
     if not environment:
         raise EvidenceError(
             "Execution environment attestation is missing; fetch host is not execution evidence"

@@ -279,6 +279,9 @@ def compute_bundle_identity(
             payload[source_entry.bundle_relative_path.as_posix()] = source_entry.sha256
         for relative, digest in _config_entries(experiment_dir, contract).items():
             payload[(Path("configs") / relative).as_posix()] = digest
+        if contract.get("execution", "kaggle") is not None:
+            for relative, source in kaggle_runtime_files().items():
+                payload[relative] = file_sha256(source)
         content["payload_files"] = payload
         if contract.get("environment", "dependency_lock") is not None:
             payload["dependency.lock"] = file_sha256(_declared_dependency_path(experiment_dir, contract))
@@ -502,6 +505,12 @@ class BundleBuilder:
         self._copy_source_closure(closure)
         if identity.algorithm == BUNDLE_IDENTITY_ALGORITHM_V3 and contract.get("environment", "dependency_lock") is not None:
             shutil.copy2(_declared_dependency_path(self.experiment_dir, contract), self.bundle_dir / "dependency.lock")
+
+        if contract.get("execution", "kaggle") is not None:
+            for relative, source in kaggle_runtime_files().items():
+                destination = self.bundle_dir / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
 
         # Write bundle manifest
         manifest_dict["files"] = self._collect_file_hashes()
@@ -753,3 +762,13 @@ def create_bundle(experiment_dir: Path | str) -> tuple[Path, str]:
     """Convenience function to create a bundle."""
     builder = BundleBuilder(experiment_dir)
     return builder.build()
+
+
+def kaggle_runtime_files() -> dict[str, Path]:
+    root = Path(__file__).resolve().parents[1]
+    names = ["runner/environment.py", "runner/invocation.py", "runner/inputs.py", "hashing/canonical.py", "hashing/digest.py", "util/path.py", "util/env.py"]
+    result = {"source/expcon/" + name: root / name for name in names}
+    for name in ["__init__.py", "runner/__init__.py", "hashing/__init__.py", "util/__init__.py"]:
+        result["source/expcon/" + name] = root / name
+    result["runner/_expcon_kaggle.py"] = root / "resources/kaggle_bootstrap.py"
+    return result

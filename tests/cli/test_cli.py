@@ -128,7 +128,7 @@ class TestCLI:
         tmp_path, exp_dir = minimal_project
         (exp_dir / "scripts/run.py").write_text("import sys; print('boom', file=sys.stderr); raise SystemExit(9)\n")
         monkeypatch.setattr(
-            "expcon.cli.commands.preflight_local_environment",
+            "expcon.service.operations.preflight_local_environment",
             lambda *_: {"python_executable": sys.executable, "status": "PASS"},
         )
         runner = CliRunner()
@@ -151,7 +151,7 @@ class TestCLI:
     def test_complete_local_fixture_workflow_preserves_repeat_attempts(self, minimal_project, monkeypatch):
         tmp_path, exp_dir = minimal_project
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr("expcon.cli.commands.preflight_local_environment", lambda *_: {
+        monkeypatch.setattr("expcon.service.operations.preflight_local_environment", lambda *_: {
             "python_executable": sys.executable, "python": sys.version, "status": "PASS"})
         # This is a synthetic CLI fixture, not the later real ML validation.
         data = yaml.safe_load((exp_dir / "EXPERIMENT.yaml").read_text())
@@ -188,7 +188,7 @@ class TestCLI:
                 return context.run_id
             def status(self, run_id):
                 return RunStatus(run_id, next(states))
-        monkeypatch.setattr("expcon.cli.commands.KaggleBackend", FakeBackend)
+        monkeypatch.setattr("expcon.service.operations.KaggleBackend", FakeBackend)
         data = yaml.safe_load((exp_dir / "EXPERIMENT.yaml").read_text())
         data["execution"]["allowed_backends"] = ["kaggle"]
         (exp_dir / "EXPERIMENT.yaml").write_text(yaml.safe_dump(data))
