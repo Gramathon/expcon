@@ -1,0 +1,10 @@
+{
+  "name": "pi-expcon-source",
+  "version": "0.2.0",
+  "private": true,
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./integrations/pi-expcon/extensions/expcon.ts"],
+    "skills": ["./integrations/pi-expcon/skills"]
+  }
+}

@@ -1,6 +1,6 @@
 [project]
 name = "expcon"
-version = "0.1.0"
+version = "0.2.0"
 description = "Experiment Control System for AI-assisted ML research"
 readme = "README.md"
 license = "MIT"
@@ -58,6 +58,7 @@ expcon = [
     "resources/schemas/*.json",
     "resources/templates/*",
     "resources/kaggle_bootstrap.py",
+    "resources/examples/cpu/*",
 ]
 
 [tool.pytest.ini_options]

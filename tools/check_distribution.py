@@ -16,6 +16,14 @@ def main():
     (sdist,) = args.directory.glob("*.tar.gz")
     required = {
         "expcon/resources/schemas/experiment-v1.json",
+        "expcon_mcp/server.py",
+        "expcon/service/controller.py",
+        "expcon/backends/kaggle.py",
+        "expcon/resources/kaggle_bootstrap.py",
+        "expcon/resources/examples/cpu/model.py",
+        "expcon/resources/examples/cpu/create_drafts.py",
+        "expcon/resources/examples/cpu/generate.py",
+        "expcon/resources/examples/cpu/protocol.json",
         "expcon/resources/skills/experiment-contract/SKILL.md",
         "expcon/resources/skills/experiment-contract/references/local.md",
         "expcon/resources/templates/AGENTS.fragment.md",
@@ -30,6 +38,9 @@ def main():
             n for n in names if n.endswith(".dist-info/entry_points.txt")
         )
         assert "expcon = expcon.cli:main" in archive.read(entries_name).decode()
+        assert (
+            "expcon-mcp = expcon_mcp.server:main" in archive.read(entries_name).decode()
+        )
     with tarfile.open(sdist) as archive:
         members = archive.getnames()
         assert not any("__pycache__" in n or n.endswith(".pyc") for n in members)
@@ -46,6 +57,10 @@ def main():
     assert metadata["Description-Content-Type"] == "text/markdown"
     dependencies = metadata.get_all("Requires-Dist", [])
     assert any("tomli" in item and "3.11" in item for item in dependencies)
+    for extra in ("mcp", "kaggle", "tinker"):
+        assert extra in metadata.get_all("Provides-Extra", [])
+    for name in ("kaggle", "tinker", "mcp", "uvicorn"):
+        assert all("extra ==" in d for d in dependencies if d.startswith(name))
     print(
         json.dumps(
             {

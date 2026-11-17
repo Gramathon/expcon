@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from expcon import __version__
 from mcp.server.transport_security import TransportSecuritySettings
 
 from expcon.service.controller import ExperimentService, page
@@ -36,7 +37,7 @@ def create_server(workspace_root: str, port: int = 7680) -> FastMCP:
         from expcon.backends.kaggle import KaggleApiTransport, KaggleCliTransport
 
         return {
-            "version": "0.1.0",
+            "version": __version__,
             "trust_model": "trusted-host",
             "workspace": str(service.root),
             "kaggle": {

@@ -81,6 +81,44 @@ def main():
                 )
                 args.report.write_text(json.dumps(report, indent=2) + "\n")
                 raise RuntimeError("Isolated wheel check failed; report preserved")
+        # Exercise the optional MCP extra separately from the core-only checks.
+        for command in [
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                str(target / "bin/python"),
+                str(wheel) + "[mcp]",
+            ],
+            [str(target / "bin/expcon-mcp"), "--help"],
+            [
+                str(target / "bin/python"),
+                "-I",
+                "-B",
+                str(Path(__file__).with_name("mcp_smoke.py").resolve()),
+            ],
+            [
+                str(target / "bin/python"),
+                "-I",
+                "-B",
+                "-c",
+                "import expcon_mcp.server,importlib.metadata as m; assert m.version('expcon')",
+            ],
+        ]:
+            result = subprocess.run(
+                command, cwd="/tmp", env=environment, text=True, capture_output=True
+            )
+            events.append(
+                {
+                    "command": command,
+                    "returncode": result.returncode,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                }
+            )
+            if result.returncode:
+                raise RuntimeError("Installed MCP smoke failed: " + result.stderr)
         report["checks"].append(
             {
                 "python": label,

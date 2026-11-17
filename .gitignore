@@ -24,3 +24,7 @@ dist/
 /.pi/mcp.json
 /experiments/
 /uv.lock.bak.*
+
+node_modules/
+*.tgz
+/.test-sol-pi/

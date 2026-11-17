@@ -3,6 +3,7 @@
 import sys
 
 import click
+from expcon import __version__
 
 from expcon.cli.commands import (
     init_cmd,
@@ -32,7 +33,7 @@ from expcon.cli.commands import (
 
 
 @click.group()
-@click.version_option(version="0.1.0", prog_name="expcon")
+@click.version_option(version=__version__, prog_name="expcon")
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """Expcon - Experiment Control System for AI-assisted ML research.
