@@ -1,6 +1,6 @@
 # Release readiness — proposed 0.2.0
 
-The distribution implementation is ready for PR review. No release tag, public
+The distribution implementation is under review in PR #5. No release tag, public
 GitHub Release, PyPI upload or npm publication was created. Local validation ran
 on Linux x86_64 in isolated environments, without modifying the live research
 checkout, scientific dependency lock or retained research evidence.
@@ -48,9 +48,12 @@ release-notes.md and SHA256SUMS. It attests those exact files before publication
   model-driven compaction/reduction behavior was tested.
 - Remote backends remain at their existing mocked validation boundary. Execution
   shares the trusted host's identity and is not OS sandboxed.
-- Git source installation is validated separately against the pushed immutable
-  branch commit before the PR is finalized. No version-tag installation can be
-  tested until that tag exists; use the extracted archive for initial installation.
+- Git source installation passed end to end at immutable commit
+  e089839c6165ef79d0ff1e50ef70eff57086833e. No version-tag installation was tested
+  because no release tag was authorised. Extracted-archive installation also passed.
+- The configured SoL-Pi test enables observationPack and onlineContextCompact,
+  matching the existing research configuration; actionFusion and the reducer
+  remain disabled. It performs no model requests.
 
 See [installation](INSTALLATION.md), [release steps](RELEASING.md), and the
 [initial audit](DISTRIBUTION_AUDIT.md). The release workflow intentionally refuses

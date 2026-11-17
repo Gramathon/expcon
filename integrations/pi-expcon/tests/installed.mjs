@@ -22,6 +22,8 @@ if(process.env.EXPCON_TEST_CONFIGURED_MCP){
   // This unreachable extension URL must lose to the configured stdio server.
   process.env.EXPCON_MCP_URL='http://127.0.0.1:1/mcp';
 }
+const solConfig={version:1,actionFusion:false,observationPack:true,evidencePreservingReducer:false,onlineContextCompact:true,cacheWriteReadRatio:12.5};
+if(process.env.SOL_PI_PACKAGE) writeFileSync(join(agentDir,'sol-pi.json'),JSON.stringify(solConfig));
 const extra=process.env.SOL_PI_PACKAGE ? [process.env.SOL_PI_PACKAGE] : [];
 const errors=[];
 async function start(){
@@ -55,7 +57,7 @@ async function call(name,args={}){
   const texts=(raw?.content || outcome.result.content).filter(x=>x.type==='text').map(x=>x.text);
   return JSON.parse(texts.join('\n'));
 }
-const report={host:'Pi 1.5.2',solPi:process.env.SOL_PI_PACKAGE||null,results:[],status:'STARTED'};
+const report={host:'Pi 1.5.2',solPi:process.env.SOL_PI_PACKAGE||null,solConfig:process.env.SOL_PI_PACKAGE ? solConfig : null,results:[],status:'STARTED'};
 try{
   session=await start();
   assert(session.getAllTools().some(t=>t.name==='expcon_diagnose'));

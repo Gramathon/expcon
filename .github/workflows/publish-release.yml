@@ -65,7 +65,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           mkdir release
-          cp evidence/package-3.12/*.whl evidence/package-3.12/*.tar.gz evidence/pi-package/*.tgz release/
+          cp evidence/python-dist/*.whl evidence/python-dist/*.tar.gz evidence/pi-package/*.tgz release/
           python -B tools/release/manifest.py release evidence --tag "$TAG"
           (cd release && sha256sum --check SHA256SUMS)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -105,11 +105,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          SOURCE_COMMIT: ${{ needs.source.outputs.commit }}
           TAG: ${{ github.ref_name }}
         run: |
           (cd release && sha256sum --check SHA256SUMS)
           for asset in release/*; do
-            gh attestation verify "$asset" --repo "$GH_REPO" --signer-workflow "$GH_REPO/.github/workflows/publish-release.yml"
+            gh attestation verify "$asset" --repo "$GH_REPO" --signer-workflow "$GH_REPO/.github/workflows/publish-release.yml" --source-digest "$SOURCE_COMMIT" --source-ref "refs/tags/$TAG"
           done
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release already exists; refusing to replace any assets." >&2

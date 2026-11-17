@@ -47,9 +47,15 @@ pi
 
 The package contains its extension and skill. It depends on a separately installed
 Python controller. From a checkout, `pi install ./integrations/pi-expcon` is also
-supported. The root manifest supports Git sources; see the readiness report for
-the exact source installation actually tested. A version-tag Git installation
-will only be available after that tag exists.
+supported. The root manifest was tested end to end with this immutable Git source:
+
+```bash
+pi install git:github.com/Gramathon/expcon@e089839c6165ef79d0ff1e50ef70eff57086833e
+```
+
+That command loads both the extension and research skill and passed the installed
+MCP CPU lifecycle. A version-tag Git installation will only be available after
+that tag exists; tag-based installation has not been exercised by this task.
 
 Use `/mcp` to inspect the actual connection and `/expcon-status` for executable
 and workspace diagnostics. SoL-Pi is installed separately through its own package;
