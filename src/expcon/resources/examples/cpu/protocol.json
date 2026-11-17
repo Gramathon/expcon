@@ -1,0 +1,21 @@
+{
+  "protocol_version": 1,
+  "workload": "CPU logistic regression on an explicitly generated noisy linear classification dataset",
+  "train_examples": 640,
+  "test_examples": 256,
+  "features": 4,
+  "generator_seed": 1729,
+  "label_flip_probability": 0.08,
+  "positive_epochs": 120,
+  "negative_epochs": 0,
+  "learning_rate": 0.4,
+  "acceptance": {"all": [
+    {"metric": "accuracy", "operator": ">=", "threshold": 0.8},
+    {"metric": "log_loss", "operator": "<=", "threshold": 0.55}
+  ]},
+  "replay_tolerances": {"accuracy_absolute": 1e-12, "log_loss_absolute": 1e-12, "weight_absolute": 1e-12},
+  "performance_repetitions": 5,
+  "timing": "perf_counter wall seconds; paired direct subprocess and controlled CLI run; validate/build/fetch/verify timed separately; no provider/model-loading/GPU claims",
+  "negative_scientific_deviation": "Untrained zero-weight model (0 epochs) ablation; identical dataset, held-out split and acceptance rule",
+  "scope": "Small infrastructure validation, not a novel ML research result or frontier training benchmark"
+}

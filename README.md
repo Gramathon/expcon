@@ -1,6 +1,6 @@
 # Expcon
 
-Expcon is a Python CLI for controlling experiments on a trusted research host.
+Expcon provides a Python CLI and MCP server for controlling experiments on a trusted research host.
 It freezes experiment definitions, checks declared executable and input identities,
 preserves execution records, verifies collected evidence, and evaluates scientific
 acceptance rules independently of metrics supplied by the workload.
@@ -10,9 +10,11 @@ evidence and still receive NOT_SUPPORTED or INCONCLUSIVE.
 
 ## Current scope
 
-Local validation covers Python 3.10, 3.11 and 3.12. The pre-push suite
-passed 268 tests on each interpreter. Other platforms and interpreter versions
-have not been validated. Local execution and persistence use POSIX conventions.
+The release validation matrix targets Python 3.10–3.12 on Linux/POSIX. The earlier
+268-test total describes the core-only scope; the MCP baseline had 276 passing
+cases and two live-provider skips. Packaging adds release-gate tests; see the
+[current readiness report](docs/RELEASE_READINESS.md) for executed totals. Other
+platforms and interpreter versions remain unverified.
 
 | Backend | Implemented behavior | Validation boundary |
 |---|---|---|
@@ -23,6 +25,25 @@ have not been validated. Local execution and persistence use POSIX conventions.
 
 This is research tooling under active development, not a production-readiness
 claim. It is not a security sandbox, a GPU optimiser or a distributed scheduler.
+
+## Install
+
+The proposed GitHub-only release is **v0.2.0**. After publication, install the
+wheel without cloning:
+
+```bash
+python -m pip install 'expcon[mcp] @ https://github.com/Gramathon/expcon/releases/download/v0.2.0/expcon-0.2.0-py3-none-any.whl'
+```
+
+Omit `[mcp]` for core-only use. Download and verify SHA256SUMS before installation.
+Install the independently packaged Pi integration by extracting
+`pi-expcon-0.2.0.tgz` and running `pi install ./package` from its extraction folder.
+These assets are not available until an authorised release is published.
+
+See [installation, first CPU experiment and troubleshooting](docs/INSTALLATION.md),
+[release process](docs/RELEASING.md), and [validation evidence](docs/RELEASE_READINESS.md).
+Future package-index commands are `pip install expcon`, `uv tool install expcon`
+and `pip install 'expcon[mcp]'`; registry publication is not configured.
 
 ## Install from this checkout
 
@@ -303,13 +324,12 @@ adjudication, CLI behavior and mocked provider boundaries.
 |---|---|---|
 | [CI](.github/workflows/ci.yml) | Python 3.10–3.12 tests, lint/types/scoped formatting, dependency consistency, JUnit and coverage reports | PRs to main, pushes to main, manual dispatch |
 | [Research integrity](.github/workflows/research-integrity.yml) | CPU positive/negative results, corruption, replay and independent measurement checks on Python 3.10–3.12 | PRs to main, pushes to main, manual dispatch |
-| [Release validation](.github/workflows/release-validation.yml) | Sdist-to-wheel build, metadata/resources and runtime-only installation checks on Python 3.10–3.12 | PRs to main, pushes to main, manual dispatch, `v*`/`rc-*` tag pushes |
+| [Release validation](.github/workflows/release-validation.yml) | Sdist-to-wheel build, metadata/resources and runtime-only installation checks on Python 3.10–3.12 | PRs to main, pushes to main, manual dispatch, reusable release gate |
 
 Workflows use read-only repository permissions, pinned action commits and bounded
 artifact retention: seven days for test/package diagnostics and three days for
-CPU-study artifacts. They do not publish packages or create releases.
-Only local workflow validation has occurred; GitHub-hosted execution remains
-unverified until an authorised PR, qualifying push or dispatch.
+CPU-study artifacts. Normal CI does not publish. The separate [tag release workflow](.github/workflows/publish-release.yml) reuses these gates before creating versioned GitHub Releases.
+GitHub-hosted publication and provenance remain unverified until an authorised tag run.
 
 Tests generate temporary fixtures and the study creates fresh records. Historical
 examples/run records already tracked upstream are unchanged compatibility material,
@@ -377,5 +397,7 @@ Copy `.pi/mcp.example.json` to `.pi/mcp.json` and set the absolute controller
 executable and research workspace paths. See [the MCP workflow](docs/EXPCON_MCP_ARCHITECTURE.md)
 for explicit freeze/run tools, persistent research history and deployment limits.
 
-The MCP branch passes 276 tests on Python 3.12, with two live Kaggle tests skipped.
-Live Kaggle execution and Pi extension TypeScript checks remain unverified.
+The standalone Pi package is under `integrations/pi-expcon`. TypeScript and
+installed Pi/SoL-Pi lifecycle checks are part of release validation; see the
+[readiness report](docs/RELEASE_READINESS.md) for executed results. Live remote
+provider execution remains unverified.

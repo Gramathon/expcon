@@ -1,0 +1,14 @@
+{
+  "name": "pi-expcon",
+  "version": "0.2.0",
+  "description": "Pi and SoL-Pi integration for the installed Expcon MCP controller",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["pi-package"],
+  "engines": {"node": ">=22.19.0"},
+  "files": ["extensions", "skills", "README.md", "LICENSE"],
+  "pi": {"extensions": ["./extensions/expcon.ts"], "skills": ["./skills"]},
+  "peerDependencies": {"@earendil-works/pi-coding-agent": "*", "typebox": "*"},
+  "scripts": {"typecheck": "tsc --noEmit", "test": "tsx --test tests/*.test.ts"},
+  "devDependencies": {"@earendil-works/pi-coding-agent": "1.5.2", "typebox": "1.3.27", "@types/node": "22.19.19", "typescript": "5.9.3", "tsx": "4.21.0"}
+}
