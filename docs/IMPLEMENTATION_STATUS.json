@@ -1,9 +1,28 @@
 {
   "status": "TRUSTED_HOST_MCP_IMPLEMENTED",
   "isolation_attested": false,
-  "offline_tests": {"passed": 276, "skipped_live_kaggle": 2},
+  "offline_tests": {
+    "passed": 278,
+    "skipped_live_kaggle": 2,
+    "python_matrix": [
+      "3.10",
+      "3.11",
+      "3.12"
+    ],
+    "scope": "full suite including distribution gates"
+  },
   "live_kaggle_certified": false,
-  "live_kaggle_blocker": "Requires Python >=3.11 with expcon[kaggle], configured provider credentials and EXPCON_LIVE_KAGGLE_KERNEL",
-  "transports": ["stdio", "loopback_streamable_http"],
-  "scientific_execution": "Trusted local execution supported; no OS isolation claim"
+  "live_kaggle_blocker": "Requires explicit provider credentials and an authorised EXPCON_LIVE_KAGGLE_KERNEL; not exercised by standard release validation",
+  "transports": [
+    "stdio",
+    "loopback_streamable_http"
+  ],
+  "scientific_execution": "Trusted local execution supported; no OS isolation claim",
+  "proposed_release": "0.2.0",
+  "pi": {
+    "host": "1.5.2",
+    "sol_pi": "0.1.1",
+    "typescript": "passed",
+    "scripted_installed_lifecycle": "passed"
+  }
 }

@@ -26,13 +26,14 @@ checkout, scientific dependency lock or retained research evidence.
 | Installed-wheel CPU study and documented first example | Passed |
 | Version/tag mismatch and immutable manifest regression tests | Two passed (included in the Python totals above) |
 | GitHub workflow static validation | actionlint 1.7.7 passed |
+| GitHub-hosted PR gates at cb257f9 | CI, Research integrity and Release validation all passed; runs 44049193273, 44049193349 and 44049193493 |
 
 The earlier 268 total was the core-only scope; 276 was the MCP baseline. Two
 packaging regression cases bring the current suite to 280 collected, 278 passing
 and two skipped. No live remote provider execution was attempted.
 
 Local artifacts and machine-readable reports are generated under
-`/tmp/expcon-final-artifacts` and `/tmp/expcon-final-evidence`. These directories
+`/tmp/expcon-0.2.0-deliverables` and `/tmp/expcon-0.2.0-evidence`. These directories
 are local validation output, not published release URLs. The release workflow
 regenerates exact artifact hashes and attaches its own validation-summary.json,
 release-notes.md and SHA256SUMS. It attests those exact files before publication.

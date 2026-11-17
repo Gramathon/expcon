@@ -1,6 +1,10 @@
 # Expcon MCP for Pi + sol-pi
 
-Install the controller in a separate environment from the scientific worker:
+For independent wheel/Pi installation, see [the installation guide](INSTALLATION.md).
+The standalone adapter supports EXPCON_MCP_EXECUTABLE and discovers research
+workspace environments or PATH without source-path injection.
+
+For development, install the controller in a separate environment from the scientific worker:
 
 ```bash
 uv venv --python 3.12 .venv-mcp

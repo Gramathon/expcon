@@ -18,8 +18,8 @@ def check(path):
             "package/README.md",
             "package/LICENSE",
         }
-        if not required <= names:
-            raise ValueError(f"Missing Pi resources: {required - names}")
+        if required != names:
+            raise ValueError(f"Unexpected Pi resource set: {required ^ names}")
         for member in archive.getmembers():
             if (
                 not member.isfile()
